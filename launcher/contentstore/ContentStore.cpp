@@ -186,6 +186,10 @@ ContentStore::State ContentStore::loadTable(State state)
     if (auto committed = commitLocked(records); !committed) {
         return setState(State::Disabled, committed.error());
     }
+    // only after the placements are finished, so links they committed protect their stored files
+    if (auto committed = commitLocked(Recovery::finishPublications(m_table, objectsDir())); !committed) {
+        return setState(State::Disabled, committed.error());
+    }
     return setState(State::Writable);
 }
 
