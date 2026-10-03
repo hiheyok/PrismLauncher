@@ -153,6 +153,19 @@ Generation* findGeneration(StoreEntry& entry, int id)
 }
 }  // namespace
 
+const Generation* StoreEntry::generation(int id) const
+{
+    if (current && current->id == id) {
+        return &*current;
+    }
+    for (const auto& generation : retired) {
+        if (generation.id == id) {
+            return &generation;
+        }
+    }
+    return nullptr;
+}
+
 QString fileIdString(const FS::FileId& id)
 {
     return QString::number(id.volume, 16) + ':' + QString::fromLatin1(id.id.toHex());
@@ -229,6 +242,11 @@ QJsonObject abort(qint64 transactionId)
 QJsonObject removeRef(const RefKey& key)
 {
     return { { "type", "removeRef" }, { "key", keyToJson(key) } };
+}
+
+QJsonObject moveRef(const RefKey& key, const QString& relativePath)
+{
+    return { { "type", "moveRef" }, { "key", keyToJson(key) }, { "to", relativePath } };
 }
 
 QJsonObject setRefState(const RefKey& key, RefState state)
@@ -343,6 +361,18 @@ Result<> RefTable::apply(const QJsonObject& record)
     }
     if (type == "removeRef") {
         m_refs.remove(keyFromJson(record["key"].toObject()));
+        return {};
+    }
+    if (type == "moveRef") {
+        const auto from = keyFromJson(record["key"].toObject());
+        const RefKey to{ from.owner, record["to"].toString() };
+        const auto it = m_refs.find(from);
+        if (it == m_refs.end() || m_refs.contains(to)) {
+            return std::unexpected(QString("Invalid rename of a ref"));
+        }
+        const auto ref = *it;
+        m_refs.erase(it);
+        m_refs[to] = ref;
         return {};
     }
     if (type == "setRefState") {

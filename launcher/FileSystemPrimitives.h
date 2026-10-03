@@ -77,6 +77,52 @@ Result<> deleteTree(const QString& path);
 Result<QString> reserveTemporarySibling(const QString& target, const QString& tag);
 
 /**
+ * Creates a hard link at link to the existing file target.
+ */
+Result<> createHardLink(const QString& target, const QString& link);
+
+enum class LinkFailure : std::uint8_t {
+    // symbolic links need elevated rights, as on Windows without Developer Mode
+    NeedsPrivilege,
+    Failed,
+};
+
+struct LinkError {
+    LinkFailure failure = LinkFailure::Failed;
+    QString message;
+};
+
+/**
+ * Creates a symbolic link at link that points to the absolute path target.
+ */
+std::expected<void, LinkError> createSymbolicLink(const QString& target, const QString& link);
+
+/**
+ * Keeps other programs from opening a file for writing while it exists, but still lets it be replaced or deleted.
+ * Only Windows can enforce this; elsewhere it does nothing.
+ */
+class PinnedFile {
+   public:
+    PinnedFile() = default;
+    ~PinnedFile();
+    PinnedFile(PinnedFile&& other) noexcept;
+    PinnedFile& operator=(PinnedFile&& other) noexcept;
+    PinnedFile(const PinnedFile&) = delete;
+    PinnedFile& operator=(const PinnedFile&) = delete;
+
+   private:
+    friend Result<PinnedFile> pinFile(const QString& path);
+    void close();
+
+    void* m_handle = nullptr;
+};
+
+/**
+ * Pins the regular file at path. Fails if another program already has it open for writing.
+ */
+Result<PinnedFile> pinFile(const QString& path);
+
+/**
  * Writes the file's data to disk. Must be called before making the file read-only, as Windows needs write access.
  */
 Result<> flushFile(const QString& path);
@@ -88,9 +134,10 @@ Result<> flushFile(const QString& path);
 Result<> flushDir(const QString& path);
 
 namespace Testing {
-enum class Operation : std::uint8_t { Replace, Delete, FlushFile, FlushDir };
+enum class Operation : std::uint8_t { Replace, Delete, FlushFile, FlushDir, HardLink, SymbolicLink };
 
-// Called before each operation. Returning true makes the operation fail without doing anything.
+// Called before each operation. Returning true makes the operation fail without doing anything. A failed SymbolicLink
+// reports that it needs privileges, like Windows without Developer Mode.
 using FaultHook = std::function<bool(Operation operation, const QString& path)>;
 void setFaultHook(FaultHook hook);
 

@@ -33,17 +33,6 @@ PathState inspect(const QString& path)
     return state;
 }
 
-bool samePath(const QString& first, const QString& second)
-{
-#if defined(Q_OS_WIN)
-    constexpr auto sensitivity = Qt::CaseInsensitive;
-#else
-    constexpr auto sensitivity = Qt::CaseSensitive;
-#endif
-    return QDir::cleanPath(QFileInfo(first).absoluteFilePath())
-               .compare(QDir::cleanPath(QFileInfo(second).absoluteFilePath()), sensitivity) == 0;
-}
-
 bool holdsPlacement(const Transaction& transaction, const PathState& state)
 {
     if (!transaction.preparedKind) {
@@ -51,7 +40,7 @@ bool holdsPlacement(const Transaction& transaction, const PathState& state)
         return false;
     }
     if (*transaction.preparedKind == PlacementKind::Symbolic) {
-        return state.isSymbolicLink && samePath(state.target, transaction.expected);
+        return state.isSymbolicLink && ObjectFiles::samePath(state.target, transaction.expected);
     }
     return !state.isSymbolicLink && state.fileId && fileIdString(*state.fileId) == transaction.expected;
 }

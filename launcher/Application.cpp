@@ -990,6 +990,8 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
     if (m_settings->get("SharedStoreEnabled").toBool()) {
         const auto storeDir = QDir(m_dataPath).absoluteFilePath(m_settings->get("SharedStoreDir").toString());
         m_contentStore = std::make_unique<ContentStore>(storeDir, m_dataPath);
+        m_contentStore->setLinkMode(ContentStore::linkModeFromSetting(m_settings->get("SharedStoreLinkMode").toString()));
+        m_contentStore->setPrivilegedLinker(ContentStore::defaultPrivilegedLinker());
         m_contentStore->open();
         qInfo() << "<> Shared store" << storeDir << "opened with state" << static_cast<int>(m_contentStore->state());
     }

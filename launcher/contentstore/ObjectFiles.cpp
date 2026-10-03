@@ -3,6 +3,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 
 #include "FileSystemPrimitives.h"
 
@@ -94,6 +95,17 @@ Result<QString> copyAndHash(const QString& source, const QString& target)
 bool makeReadOnly(const QString& path)
 {
     return QFile::setPermissions(path, QFile::ReadOwner | QFile::ReadUser | QFile::ReadGroup | QFile::ReadOther);
+}
+
+bool samePath(const QString& first, const QString& second)
+{
+#if defined(Q_OS_WIN)
+    constexpr auto sensitivity = Qt::CaseInsensitive;
+#else
+    constexpr auto sensitivity = Qt::CaseSensitive;
+#endif
+    return QDir::cleanPath(QFileInfo(first).absoluteFilePath())
+               .compare(QDir::cleanPath(QFileInfo(second).absoluteFilePath()), sensitivity) == 0;
 }
 
 }  // namespace ObjectFiles

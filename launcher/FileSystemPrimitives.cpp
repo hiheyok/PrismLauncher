@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "FileSystem.h"
@@ -441,6 +442,102 @@ Result<QString> reserveTemporarySibling(const QString& target, const QString& ta
         lastError = file.errorString();
     }
     return std::unexpected(QString("Failed to create a temporary file next to %1: %2").arg(target, lastError));
+}
+
+Result<> createHardLink(const QString& target, const QString& link)
+{
+    TRY(checkFaultHook(Testing::Operation::HardLink, link))
+#if defined(Q_OS_WIN)
+    if (!CreateHardLinkW(nativePath(link).c_str(), nativePath(target).c_str(), nullptr)) {
+        return std::unexpected(QString("Failed to link %1 to %2: %3").arg(link, target, errorString(GetLastError())));
+    }
+#else
+    if (::link(encodedPath(target).constData(), encodedPath(link).constData()) != 0) {
+        return std::unexpected(
+            QString("Failed to link %1 to %2: %3").arg(link, target, QString::fromStdString(std::generic_category().message(errno))));
+    }
+#endif
+    return {};
+}
+
+std::expected<void, LinkError> createSymbolicLink(const QString& target, const QString& link)
+{
+    if (auto injected = checkFaultHook(Testing::Operation::SymbolicLink, link); !injected) {
+        return std::unexpected(LinkError{ LinkFailure::NeedsPrivilege, injected.error() });
+    }
+#if defined(Q_OS_WIN)
+    // without elevation this only works in Developer Mode, and older versions don't know the flag
+    constexpr DWORD allowUnprivilegedCreate = 0x2;
+    const auto nativeLink = nativePath(link);
+    const auto nativeTarget = nativePath(target);
+    if (CreateSymbolicLinkW(nativeLink.c_str(), nativeTarget.c_str(), allowUnprivilegedCreate)) {
+        return {};
+    }
+    auto error = GetLastError();
+    if (error == ERROR_INVALID_PARAMETER) {
+        if (CreateSymbolicLinkW(nativeLink.c_str(), nativeTarget.c_str(), 0)) {
+            return {};
+        }
+        error = GetLastError();
+    }
+    const auto failure = error == ERROR_PRIVILEGE_NOT_HELD ? LinkFailure::NeedsPrivilege : LinkFailure::Failed;
+    return std::unexpected(LinkError{ failure, QString("Failed to link %1 to %2: %3").arg(link, target, errorString(error)) });
+#else
+    if (symlink(encodedPath(target).constData(), encodedPath(link).constData()) != 0) {
+        return std::unexpected(LinkError{
+            LinkFailure::Failed,
+            QString("Failed to link %1 to %2: %3").arg(link, target, QString::fromStdString(std::generic_category().message(errno))) });
+    }
+    return {};
+#endif
+}
+
+PinnedFile::~PinnedFile()
+{
+    close();
+}
+
+PinnedFile::PinnedFile(PinnedFile&& other) noexcept : m_handle(std::exchange(other.m_handle, nullptr)) {}
+
+PinnedFile& PinnedFile::operator=(PinnedFile&& other) noexcept
+{
+    if (this != &other) {
+        close();
+        m_handle = std::exchange(other.m_handle, nullptr);
+    }
+    return *this;
+}
+
+void PinnedFile::close()
+{
+#if defined(Q_OS_WIN)
+    if (m_handle) {
+        CloseHandle(m_handle);
+    }
+#endif
+    m_handle = nullptr;
+}
+
+Result<PinnedFile> pinFile(const QString& path)
+{
+    PinnedFile pinned;
+#if defined(Q_OS_WIN)
+    // Reading takes part in sharing checks, so this fails while a writer has the file open, and no writer can open it
+    // while the handle is held. Sharing deletion still allows the file to be replaced by a rename.
+    const auto handle = CreateFileW(nativePath(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (error == ERROR_SHARING_VIOLATION) {
+            return std::unexpected(QString("%1 is being used by another program").arg(path));
+        }
+        return std::unexpected(QString("Failed to open %1: %2").arg(path, errorString(error)));
+    }
+    pinned.m_handle = handle;
+#else
+    Q_UNUSED(path)
+#endif
+    return pinned;
 }
 
 Result<> flushFile(const QString& path)
