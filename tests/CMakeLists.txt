@@ -51,6 +51,9 @@ ecm_add_test(Packwiz_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR
 ecm_add_test(ExportHashes_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME ExportHashes)
 
+ecm_add_test(HashUtils_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+    TEST_NAME HashUtils)
+
 ecm_add_test(Index_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME Index)
 

@@ -30,16 +30,73 @@ Hasher::Ptr createHasher(QString file_path, QString type)
 
 class QIODeviceReader : public Murmur2::Reader {
    public:
-    QIODeviceReader(QIODevice* device) : m_device(device) {}
+    QIODeviceReader(QIODevice* device) : m_device(device), m_start(device->pos()) {}
     virtual ~QIODeviceReader() = default;
-    virtual int read(char* s, int n) { return m_device->read(s, n); }
-    virtual bool eof() { return m_device->atEnd(); }
-    virtual void goToBeginning() { m_device->seek(0); }
+    virtual int read(char* s, int n)
+    {
+        const auto bytesRead = m_device->read(s, n);
+        if (bytesRead < 0) {
+            m_failed = true;
+            return 0;
+        }
+        m_bytesRead += bytesRead;
+        return static_cast<int>(bytesRead);
+    }
+    // a failed read ends the hash instead of retrying forever
+    virtual bool eof() { return m_failed || m_device->atEnd(); }
+    virtual void goToBeginning()
+    {
+        checkComplete();
+        m_bytesRead = 0;
+        if (!m_device->seek(m_start)) {
+            m_failed = true;
+        }
+    }
     virtual void close() { m_device->close(); }
 
+    // whether every pass read the whole device without errors
+    bool succeeded()
+    {
+        checkComplete();
+        return !m_failed;
+    }
+
    private:
+    void checkComplete()
+    {
+        if (!m_device->isSequential() && m_bytesRead != m_device->size() - m_start) {
+            m_failed = true;
+        }
+    }
+
     QIODevice* m_device;
+    qint64 m_start;
+    qint64 m_bytesRead = 0;
+    bool m_failed = false;
 };
+
+namespace {
+// Adds the rest of the device to the hash, failing on a read error or if less than the whole file was read
+bool addDevice(QCryptographicHash& hash, QIODevice* device)
+{
+    constexpr qint64 chunkSize = 64 * 1024;
+    QByteArray buffer(chunkSize, Qt::Uninitialized);
+    const auto start = device->pos();
+    qint64 total = 0;
+    while (!device->atEnd()) {
+        const auto bytesRead = device->read(buffer.data(), chunkSize);
+        if (bytesRead < 0) {
+            return false;
+        }
+        if (bytesRead == 0) {
+            break;
+        }
+        hash.addData(QByteArrayView(buffer.constData(), bytesRead));
+        total += bytesRead;
+    }
+    return device->isSequential() || total == device->size() - start;
+}
+}  // namespace
 
 QString algorithmToString(Algorithm type)
 {
@@ -105,7 +162,12 @@ QString hash(QIODevice* device, Algorithm type)
             auto should_filter_out = [](char c) { return (c == 9 || c == 10 || c == 13 || c == 32); };
             auto reader = std::make_unique<QIODeviceReader>(device);
             auto result = QString::number(Murmur2::hash(reader.get(), 4 * MiB, should_filter_out));
+            const bool succeeded = reader->succeeded();
             device->close();
+            if (!succeeded) {
+                qCritical() << "Failed to read file to create hash!";
+                return "";
+            }
             return result;
         }
         case Algorithm::Unknown:
@@ -114,8 +176,11 @@ QString hash(QIODevice* device, Algorithm type)
     }
 
     QCryptographicHash hash(alg);
-    if (!hash.addData(device))
-        qCritical() << "Failed to read JAR to create hash!";
+    if (!addDevice(hash, device)) {
+        qCritical() << "Failed to read file to create hash!";
+        device->close();
+        return "";
+    }
 
     Q_ASSERT(hash.result().length() == hash.hashLength(alg));
     auto result = hash.result().toHex();
