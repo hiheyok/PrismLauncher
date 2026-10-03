@@ -580,6 +580,46 @@ class ReconcileTest : public QObject {
         QCOMPARE(*m_store->destroyUnused(), 0);
         QVERIFY(isStored(hash));
         QCOMPARE(readFile(path("b/resourcepacks/pack.zip")), "pack");
+
+        // the incomplete scan is remembered when the store is opened again
+        reopen();
+        m_store->setUnreadableForTesting([unreadable](const QString& candidate) { return candidate == unreadable; });
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(isStored(hash));
+        QVERIFY(m_store->compact());
+        reopen();
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(isStored(hash));
+
+        // a complete scan finds the link and records it
+        m_store->setUnreadableForTesting(nullptr);
+        QVERIFY(reconcileAt(m_time + 3).complete);
+        QVERIFY(m_store->table().ref(key("resourcepacks/pack.zip", "b")));
+        QVERIFY(isStored(hash));
+    }
+
+    void test_incompleteScanOfAnotherLauncherDefersDestruction()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("pack");
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        QVERIFY(m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        QVERIFY(m_store->commit({ RefRecord::client("other-client", path("other"), m_time) }));
+        {
+            const auto lease = m_store->lease(hash);
+            QVERIFY(m_store->unshare(key("resourcepacks/pack.zip")));
+            QVERIFY(m_store->commit({ RefRecord::reconciled("other-client", m_time + 1) }));
+            QVERIFY(reconcileAt(m_time + 1).complete);
+        }
+        // the other launcher's latest scan couldn't read all its folders
+        QVERIFY(m_store->commit({ RefRecord::reconciled("other-client", m_time + 2, false) }));
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(isStored(hash));
+        QVERIFY(m_store->commit({ RefRecord::reconciled("other-client", m_time + 3) }));
+        QCOMPARE(*m_store->destroyUnused(), 1);
     }
 
     void test_destructionOrder()

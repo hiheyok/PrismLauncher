@@ -281,9 +281,13 @@ QJsonObject refLost(const RefKey& key, qint64 since)
     return { { "type", "refLost" }, { "key", keyToJson(key) }, { "since", since } };
 }
 
-QJsonObject reconciled(const QString& clientId, qint64 time)
+QJsonObject reconciled(const QString& clientId, qint64 time, bool complete)
 {
-    return { { "type", "reconciled" }, { "client", clientId }, { "time", time } };
+    QJsonObject json{ { "type", "reconciled" }, { "client", clientId }, { "time", time } };
+    if (!complete) {
+        json["complete"] = false;
+    }
+    return json;
 }
 
 QJsonObject orphan(const QString& hash, std::optional<qint64> since)
@@ -409,7 +413,12 @@ Result<> RefTable::apply(const QJsonObject& record)
         return {};
     }
     if (type == "reconciled") {
-        m_clients[record["client"].toString()].lastCompleteReconcile = record["time"].toInteger();
+        auto& client = m_clients[record["client"].toString()];
+        if (record["complete"].toBool(true)) {
+            client.lastCompleteReconcile = record["time"].toInteger();
+        } else {
+            client.lastIncompleteReconcile = record["time"].toInteger();
+        }
         return {};
     }
     if (type == "orphan") {
@@ -585,6 +594,9 @@ QJsonObject RefTable::snapshot() const
         if (it->lastCompleteReconcile) {
             client["lastCompleteReconcile"] = *it->lastCompleteReconcile;
         }
+        if (it->lastIncompleteReconcile) {
+            client["lastIncompleteReconcile"] = *it->lastIncompleteReconcile;
+        }
         clients[it.key()] = client;
     }
 
@@ -652,6 +664,9 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
         ClientInfo client{ json["dataDir"].toString(), json["lastSeen"].toInteger(), std::nullopt };
         if (json.contains("lastCompleteReconcile")) {
             client.lastCompleteReconcile = json["lastCompleteReconcile"].toInteger();
+        }
+        if (json.contains("lastIncompleteReconcile")) {
+            client.lastIncompleteReconcile = json["lastIncompleteReconcile"].toInteger();
         }
         table.m_clients[it.key()] = client;
     }

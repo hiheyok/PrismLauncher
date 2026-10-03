@@ -108,6 +108,14 @@ struct ClientInfo {
     QString dataDir;
     qint64 lastSeen = 0;
     std::optional<qint64> lastCompleteReconcile;
+    // a reconciliation that couldn't read every folder; while it is the latest, links may be hidden in those folders
+    std::optional<qint64> lastIncompleteReconcile;
+
+    // whether the latest reconciliation could read every folder
+    bool lastReconcileIncomplete() const
+    {
+        return lastIncompleteReconcile && (!lastCompleteReconcile || *lastIncompleteReconcile >= *lastCompleteReconcile);
+    }
 
     bool operator==(const ClientInfo&) const = default;
 };
@@ -131,8 +139,8 @@ QJsonObject removeRef(const RefKey& key);
 QJsonObject moveRef(const RefKey& key, const QString& relativePath);
 QJsonObject setRefState(const RefKey& key, RefState state);
 QJsonObject refLost(const RefKey& key, qint64 since);
-// a complete reconciliation of a client finished
-QJsonObject reconciled(const QString& clientId, qint64 time);
+// a reconciliation of a client finished; complete if it could read every folder
+QJsonObject reconciled(const QString& clientId, qint64 time, bool complete = true);
 // since is when nothing used the file anymore; nullopt when something does again
 QJsonObject orphan(const QString& hash, std::optional<qint64> since);
 // a scan found a link to the file that isn't recorded yet, so it counts as used until then

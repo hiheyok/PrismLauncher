@@ -250,8 +250,9 @@ bool ContentStore::canDestroy(const StoreEntry& entry, const QSet<QString>& used
             return client.lastCompleteReconcile && *client.lastCompleteReconcile > since;
         });
     };
-    if ((entry.unrecorded || entry.hadSymbolicLinks) && m_scanIncomplete) {
-        // an older complete scan can't vouch for folders the latest one couldn't read
+    if ((entry.unrecorded || entry.hadSymbolicLinks) &&
+        std::ranges::any_of(m_table.clients(), [](const ClientInfo& client) { return client.lastReconcileIncomplete(); })) {
+        // an older complete scan can't vouch for folders a launcher's latest scan couldn't read
         return false;
     }
     if (entry.unrecorded) {
@@ -583,9 +584,11 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
         }
         TRY(commitLocked(records))
     }
-    m_scanIncomplete = !report.complete;
     if (report.complete) {
         TRY_INTO(report.destroyed, destroyUnusedLocked())
+    } else {
+        // remembered, also after the store is opened again, until a complete scan
+        TRY(commitLocked({ RefRecord::reconciled(m_clientId, time, false) }))
     }
 
     // 8. Leftovers of interrupted ingests. Only links or copies, never the only copy of anything.
