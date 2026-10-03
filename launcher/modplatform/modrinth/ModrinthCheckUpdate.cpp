@@ -181,6 +181,7 @@ void ModrinthCheckUpdate::checkVersionsResponse(QByteArray* response, std::optio
         pack->provider = ModPlatform::ResourceProvider::MODRINTH;
         if ((version.hash != hash && version.isPreferred) || (resource->status() == ResourceStatus::NotInstalled)) {
             auto downloadTask = makeShared<ResourceDownloadTask>(pack, version, m_resourceModel, true, "update");
+            downloadTask->setOldResource(resource->metadata()->name, resource->metadata()->filename);
 
             QString oldVersion = resource->metadata()->versionNumber;
             if (oldVersion.isEmpty()) {

@@ -386,6 +386,7 @@ set(SCREENSHOTS_SOURCES
 set(TASKS_SOURCES
     # Tasks
     tasks/Task.h
+    tasks/FunctionTask.h
     tasks/Task.cpp
     tasks/ConcurrentTask.h
     tasks/ConcurrentTask.cpp

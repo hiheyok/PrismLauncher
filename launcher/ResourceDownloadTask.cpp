@@ -33,6 +33,7 @@
 #include "modplatform/helpers/HashUtils.h"
 #include "net/ApiRequest.h"
 #include "net/ChecksumValidator.h"
+#include "tasks/FunctionTask.h"
 
 namespace {
 Net::ModrinthDownloadMeta createModrinthMeta(MinecraftInstance* instance, QString reason, QString dependentOn)
@@ -57,7 +58,11 @@ ResourceDownloadTask::ResourceDownloadTask(ModPlatform::IndexedPack::Ptr pack,
                                            bool isIndexed,
                                            QString downloadReason,
                                            QString dependentOn)
-    : m_pack(std::move(pack)), m_pack_version(std::move(version)), m_pack_model(packs)
+    : m_pack(std::move(pack))
+    , m_pack_version(std::move(version))
+    , m_pack_model(packs)
+    , m_downloadReason(std::move(downloadReason))
+    , m_dependentOn(std::move(dependentOn))
 {
     if (isIndexed) {
         m_update_task.reset(new LocalResourceUpdateTask(m_pack_model->indexDir(), *m_pack, m_pack_version));
@@ -66,12 +71,29 @@ ResourceDownloadTask::ResourceDownloadTask(ModPlatform::IndexedPack::Ptr pack,
         addTask(m_update_task);
     }
 
+    addTask(makeShared<FunctionTask>([this] { return prepareDownload(); }));
+
     m_filesNetJob.reset(new NetJob(tr("Resource download"), APPLICATION->network()));
     m_filesNetJob->setStatus(tr("Downloading resource:\n%1").arg(m_pack_version.downloadUrl));
+    connect(m_filesNetJob.get(), &NetJob::succeeded, this, &ResourceDownloadTask::downloadSucceeded);
+    connect(m_filesNetJob.get(), &NetJob::progress, this, &ResourceDownloadTask::downloadProgressChanged);
+    connect(m_filesNetJob.get(), &NetJob::stepProgress, this, &ResourceDownloadTask::propagateStepProgress);
+    connect(m_filesNetJob.get(), &NetJob::failed, this, &ResourceDownloadTask::downloadFailed);
 
-    auto action = Net::ApiRequest::makeFile(
-        m_pack_version.downloadUrl, m_pack_model->dir().absoluteFilePath(getFilename()), Net::Request::Option::NoOptions,
-        createModrinthMeta(m_pack_model->instance(), std::move(downloadReason), std::move(dependentOn)));
+    addTask(m_filesNetJob);
+}
+
+Result<> ResourceDownloadTask::prepareDownload()
+{
+    // the task can be restarted after failing, but the download only needs to be added once
+    if (m_downloadPrepared) {
+        return {};
+    }
+    m_downloadPrepared = true;
+
+    auto action = Net::ApiRequest::makeFile(m_pack_version.downloadUrl, m_pack_model->dir().absoluteFilePath(getFilename()),
+                                            Net::Request::Option::NoOptions,
+                                            createModrinthMeta(m_pack_model->instance(), m_downloadReason, m_dependentOn));
     if (!m_pack_version.hashType.isEmpty() && !m_pack_version.hash.isEmpty()) {
         switch (Hashing::algorithmFromString(m_pack_version.hashType)) {
             case Hashing::Algorithm::Md4:
@@ -94,12 +116,7 @@ ResourceDownloadTask::ResourceDownloadTask(ModPlatform::IndexedPack::Ptr pack,
         }
     }
     m_filesNetJob->addNetAction(action);
-    connect(m_filesNetJob.get(), &NetJob::succeeded, this, &ResourceDownloadTask::downloadSucceeded);
-    connect(m_filesNetJob.get(), &NetJob::progress, this, &ResourceDownloadTask::downloadProgressChanged);
-    connect(m_filesNetJob.get(), &NetJob::stepProgress, this, &ResourceDownloadTask::propagateStepProgress);
-    connect(m_filesNetJob.get(), &NetJob::failed, this, &ResourceDownloadTask::downloadFailed);
-
-    addTask(m_filesNetJob);
+    return {};
 }
 
 void ResourceDownloadTask::downloadSucceeded()
@@ -143,6 +160,11 @@ void ResourceDownloadTask::downloadProgressChanged(qint64 current, qint64 total)
 // This indirection is done so that we don't delete a mod before being sure it was
 // downloaded successfully!
 void ResourceDownloadTask::hasOldResource(const QString& name, const QString& filename)
+{
+    to_delete = { name, filename };
+}
+
+void ResourceDownloadTask::setOldResource(const QString& name, const QString& filename)
 {
     to_delete = { name, filename };
 }
