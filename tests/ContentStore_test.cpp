@@ -226,7 +226,8 @@ class ContentStoreTest : public QObject {
         QVERIFY(StoreLock::isThisMachine(host.toUpper()));
         QVERIFY(StoreLock::isThisMachine(host.toLower()));
         QVERIFY(StoreLock::isThisMachine(" " + host.section('.', 0, 0) + ".example.org"));
-        QVERIFY(!StoreLock::isThisMachine(host + "-other"));
+        // a different machine name; changing only the domain, as in "host.local-other", still names this machine
+        QVERIFY(!StoreLock::isThisMachine("other-" + host));
     }
 
     void test_localLockWithDifferentCaseIsNotForeign()
