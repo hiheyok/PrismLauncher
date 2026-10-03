@@ -356,6 +356,55 @@ class IngestTest : public QObject {
         QCOMPARE(readFile(m_store->objectPath(retry->hash)), "recorded anyway");
     }
 
+    void test_recoveredPlacementKeepsItsEntry()
+    {
+        // a hard link placement was prepared and swapped in, then the store's own copy went missing before the commit
+        QVERIFY(writeFile(path("downloads/mod.jar"), "placed"));
+        QString hash;
+        int generation = 0;
+        {
+            // the result holds a lease, which must be released before the store is closed
+            const auto stored = m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Copy);
+            QVERIFY(stored);
+            hash = stored->hash;
+            generation = stored->generation;
+        }
+        QVERIFY(QDir(m_dir.path()).mkpath("instance/mods"));
+        const auto link = path("instance/mods/mod.jar");
+        QVERIFY(hardLink(m_store->objectPath(hash), link));
+        Transaction transaction{ 1,
+                                 { "client:i", "mods/mod.jar" },
+                                 {},
+                                 std::nullopt,
+                                 std::nullopt,
+                                 hash,
+                                 PlacementKind::Hard,
+                                 fileIdString(FS::fileId(link).value()) };
+        QVERIFY(m_store->commit({ RefRecord::owner("client:i", path("instance")), RefRecord::begin(transaction) }));
+        m_store.reset();
+        makeWritable(QDir(path("store/objects")).filePath(hash.left(2) + "/" + hash));
+        QVERIFY(FS::deleteLink(QDir(path("store/objects")).filePath(hash.left(2) + "/" + hash)));
+
+        m_store = std::make_unique<ContentStore>(path("store"), path("data"));
+        QCOMPARE(m_store->open(), ContentStore::State::Writable);
+        // the placement is committed, and its stored file's entry stays for reconciliation to repair
+        const auto ref = m_store->table().ref({ "client:i", "mods/mod.jar" });
+        QVERIFY(ref);
+        QCOMPARE(ref->hash, hash);
+        QVERIFY(m_store->table().entries().contains(hash));
+        QCOMPARE(m_store->table().entries()[hash].current->id, generation);
+    }
+
+    void test_leaseOutlivesStore()
+    {
+        QVERIFY(writeFile(path("downloads/mod.jar"), "outlives"));
+        auto result = m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Copy);
+        QVERIFY(result);
+        // releasing the lease after the store closed must be harmless
+        m_store.reset();
+        result = std::unexpected(QString("released"));
+    }
+
     void test_failedMoveRestoresPermissions()
     {
         QVERIFY(writeFile(path("downloads/mod.jar"), "keep me writable"));

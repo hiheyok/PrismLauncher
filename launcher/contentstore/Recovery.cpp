@@ -104,9 +104,16 @@ QList<QJsonObject> finishPublications(const RefTable& table, const QString& obje
         // the store isn't readable, so nothing is definitely gone
         return records;
     }
+    // stored files that links, or placements still in progress, depend on
     QSet<QString> linked;
     for (const auto& ref : table.refs()) {
         linked.insert(ref.hash);
+    }
+    for (const auto& transaction : table.transactions()) {
+        linked.insert(transaction.newHash);
+        if (transaction.oldHash) {
+            linked.insert(*transaction.oldHash);
+        }
     }
     for (const auto& entry : table.entries()) {
         if (!entry.current || linked.contains(entry.hash)) {

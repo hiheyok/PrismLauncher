@@ -7,6 +7,7 @@
 #include <QString>
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 #include "FileSystemPrimitives.h"
@@ -34,11 +35,17 @@ class ContentStore {
         Disabled,
     };
 
-    // Keeps a stored file from being destroyed while an operation uses it
+    // How many operations use each stored file, shared with the leases so they can outlive the store
+    struct LeaseCounts {
+        QMutex mutex;
+        QHash<QString, int> counts;
+    };
+
+    // Keeps a stored file from being destroyed while an operation uses it. Safe to release after the store closed.
     class Lease {
        public:
         Lease() = default;
-        Lease(ContentStore* store, QString hash);
+        Lease(std::shared_ptr<LeaseCounts> counts, QString hash);
         ~Lease();
         Lease(Lease&& other) noexcept;
         Lease& operator=(Lease&& other) noexcept;
@@ -50,7 +57,7 @@ class ContentStore {
        private:
         void release();
 
-        ContentStore* m_store = nullptr;
+        std::shared_ptr<LeaseCounts> m_counts;
         QString m_hash;
     };
 
@@ -140,8 +147,7 @@ class ContentStore {
     StoreFormat m_format;
     // serializes changes to the journal and table
     QMutex m_mutex;
-    QHash<QString, int> m_leases;
-    mutable QMutex m_leaseMutex;
+    std::shared_ptr<LeaseCounts> m_leases = std::make_shared<LeaseCounts>();
     State m_state = State::Closed;
     QString m_statusMessage;
 };

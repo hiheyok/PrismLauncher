@@ -18,7 +18,8 @@ namespace Recovery {
 // Placements whose owner has no known root are left open.
 QList<QJsonObject> finishTransactions(const RefTable& table);
 
-// Removes stored files that were recorded but whose file is definitely gone, and that nothing links to.
+// Removes stored files that were recorded but whose file is definitely gone, and that nothing links to or is placing.
+// Run it after finishTransactions has been applied, so placements committed by it count as links.
 //
 // A publication can be recorded even though writing its record was reported as failed, after which the file was
 // moved back to where it came from. Files that instances still link to are left for reconciliation.

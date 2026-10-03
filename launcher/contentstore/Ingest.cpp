@@ -36,10 +36,10 @@ bool sameIdentity(const FS::FileIdentity& first, const FS::FileIdentity& second)
 }
 }  // namespace
 
-ContentStore::Lease::Lease(ContentStore* store, QString hash) : m_store(store), m_hash(std::move(hash))
+ContentStore::Lease::Lease(std::shared_ptr<LeaseCounts> counts, QString hash) : m_counts(std::move(counts)), m_hash(std::move(hash))
 {
-    QMutexLocker locker(&m_store->m_leaseMutex);
-    m_store->m_leases[m_hash]++;
+    QMutexLocker locker(&m_counts->mutex);
+    m_counts->counts[m_hash]++;
 }
 
 ContentStore::Lease::~Lease()
@@ -47,43 +47,41 @@ ContentStore::Lease::~Lease()
     release();
 }
 
-ContentStore::Lease::Lease(Lease&& other) noexcept : m_store(other.m_store), m_hash(std::move(other.m_hash))
-{
-    other.m_store = nullptr;
-}
+ContentStore::Lease::Lease(Lease&& other) noexcept : m_counts(std::move(other.m_counts)), m_hash(std::move(other.m_hash)) {}
 
 ContentStore::Lease& ContentStore::Lease::operator=(Lease&& other) noexcept
 {
     if (this != &other) {
         release();
-        m_store = other.m_store;
+        m_counts = std::move(other.m_counts);
         m_hash = std::move(other.m_hash);
-        other.m_store = nullptr;
     }
     return *this;
 }
 
 void ContentStore::Lease::release()
 {
-    if (!m_store) {
+    if (!m_counts) {
         return;
     }
-    QMutexLocker locker(&m_store->m_leaseMutex);
-    if (--m_store->m_leases[m_hash] <= 0) {
-        m_store->m_leases.remove(m_hash);
+    {
+        QMutexLocker locker(&m_counts->mutex);
+        if (--m_counts->counts[m_hash] <= 0) {
+            m_counts->counts.remove(m_hash);
+        }
     }
-    m_store = nullptr;
+    m_counts.reset();
 }
 
 ContentStore::Lease ContentStore::lease(const QString& hash)
 {
-    return { this, hash };
+    return { m_leases, hash };
 }
 
 int ContentStore::leaseCount(const QString& hash) const
 {
-    QMutexLocker locker(&m_leaseMutex);
-    return m_leases.value(hash);
+    QMutexLocker locker(&m_leases->mutex);
+    return m_leases->counts.value(hash);
 }
 
 QString ContentStore::objectPath(const QString& hash) const
