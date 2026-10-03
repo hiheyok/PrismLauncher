@@ -68,6 +68,8 @@ set(CORE_SOURCES
 
     FileSystem.h
     FileSystem.cpp
+    FileSystemPrimitives.h
+    FileSystemPrimitives.cpp
 
     Result.h
 
@@ -587,6 +589,8 @@ set(LINKEXE_SOURCES
     filelink/FileLink.cpp
     FileSystem.h
     FileSystem.cpp
+    FileSystemPrimitives.h
+    FileSystemPrimitives.cpp
     Result.h
     StringUtils.h
     StringUtils.cpp
@@ -606,6 +610,8 @@ set(PRISMUPDATER_SOURCES
     Json.cpp
     FileSystem.h
     FileSystem.cpp
+    FileSystemPrimitives.h
+    FileSystemPrimitives.cpp
     StringUtils.h
     StringUtils.cpp
     DesktopServices.h

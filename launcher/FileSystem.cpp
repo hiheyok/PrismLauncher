@@ -38,6 +38,7 @@
 #include "FileSystem.h"
 #include <qcontainerfwd.h>
 #include <QPair>
+#include "FileSystemPrimitives.h"
 
 #include "BuildConfig.h"
 
@@ -810,7 +811,16 @@ bool deletePath(QString path)
 {
     std::error_code err;
 
-    fs::remove_all(StringUtils::toStdString(std::move(path)), err);
+    fs::remove_all(StringUtils::toStdString(path), err);
+
+#if defined Q_OS_WIN32
+    if (err) {
+        // read-only files can't be removed normally, and clearing the attribute would affect their other hard links
+        if (auto result = deleteTree(path); result) {
+            return true;
+        }
+    }
+#endif
 
     if (err) {
         qWarning() << "Failed to remove files:" << QString::fromStdString(err.message());
