@@ -64,7 +64,8 @@ class ContentStore {
         LinkIn,
     };
 
-    // A SHA-256 computed while the file was written, valid while the file still has this identity
+    // A SHA-256 computed while the file was written, valid while the file still has this identity. Ingest checks the
+    // stored file against it, but always hashes the stored file itself.
     struct PrecomputedDigest {
         QString sha256;
         FS::FileIdentity identity;

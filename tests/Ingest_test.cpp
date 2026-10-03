@@ -309,15 +309,46 @@ class IngestTest : public QObject {
     void test_storeSurvivesReopen()
     {
         QVERIFY(writeFile(path("downloads/mod.jar"), "persistent"));
-        const auto result = m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Copy);
-        QVERIFY(result);
+        QString hash;
+        {
+            // the result holds a lease, which must be released before the store is closed
+            const auto result = m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Copy);
+            QVERIFY(result);
+            hash = result->hash;
+        }
         m_store.reset();
         m_store = std::make_unique<ContentStore>(path("store"), path("data"));
         QCOMPARE(m_store->open(), ContentStore::State::Writable);
-        QVERIFY(m_store->table().entries().contains(result->hash));
+        QVERIFY(m_store->table().entries().contains(hash));
         QVERIFY(writeFile(path("downloads/again.jar"), "persistent"));
         const auto again = m_store->ingest(path("downloads/again.jar"), ContentStore::IngestMode::Copy);
         QVERIFY(again && again->reusedObject && !again->rehashedObject);
+    }
+
+    void test_failedMoveRestoresPermissions()
+    {
+        QVERIFY(writeFile(path("downloads/mod.jar"), "keep me writable"));
+        int replaces = 0;
+        FS::Testing::setFaultHook([&replaces](FS::Testing::Operation operation, const QString&) {
+            return operation == FS::Testing::Operation::Replace && replaces++ == 1;
+        });
+        QVERIFY(!m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Move));
+        FS::Testing::setFaultHook(nullptr);
+        QCOMPARE(readFile(path("downloads/mod.jar")), "keep me writable");
+        QVERIFY(QFileInfo(path("downloads/mod.jar")).isWritable());
+    }
+
+    void test_digestIsCheckedAgainstStoredContents()
+    {
+        // the digest matches the file's identity, but the stored contents are hashed anyway
+        QVERIFY(writeFile(path("downloads/mod.jar"), "downloaded"));
+        const ContentStore::PrecomputedDigest digest{ sha256Of("not what was downloaded"),
+                                                      FS::identity(path("downloads/mod.jar")).value() };
+        QVERIFY(!m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Move, digest));
+        QCOMPARE(readFile(path("downloads/mod.jar")), "downloaded");
+        QVERIFY(QFileInfo(path("downloads/mod.jar")).isWritable());
+        QVERIFY(m_store->table().entries().isEmpty());
+        QVERIFY(leftovers().isEmpty());
     }
 };
 

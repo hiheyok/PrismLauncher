@@ -110,8 +110,12 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
         }
     }
 
-    // a digest only describes the file it was computed for, unchanged
+    // A digest only describes the file it was computed for, unchanged. It is only used to check the hash computed here:
+    // the file could change between checking its identity and moving or linking it, so the stored file is always
+    // hashed after it was made read-only, and its name always matches its contents.
     const bool digestIsValid = digest && sameIdentity(digest->identity, sourceIdentity);
+    // the permissions to give back if the file is returned to the caller
+    const auto originalPermissions = QFile::permissions(source);
 
     TRY_INTO(auto candidate, FS::reserveTemporarySibling(QDir(temporaryDir()).filePath("object"), "ingest"))
     QString hash;
@@ -147,9 +151,8 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
     }
 
     if (sourceLinked || sourceMoved) {
-        if (digestIsValid) {
-            hash = digest->sha256;
-        }
+        // the candidate is the source file itself, so making it read-only also changes the source
+        sourcePermissions = originalPermissions;
     } else {
         // copy, also the fallback when the file couldn't be linked or moved
         auto copied = ObjectFiles::copyAndHash(source, candidate);
@@ -162,10 +165,6 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
     if (auto flushed = FS::flushFile(candidate); !flushed) {
         return undo(flushed.error());
     }
-    if (sourceLinked) {
-        // the candidate shares the file with the source, so making it read-only also changes the source
-        sourcePermissions = QFile::permissions(source);
-    }
     if (!ObjectFiles::makeReadOnly(candidate)) {
         return undo(QString("Could not make %1 read-only").arg(candidate));
     }
@@ -177,7 +176,7 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
         }
         hash = *hashed;
     }
-    if (digest && digestIsValid && digest->sha256 != hash) {
+    if (digestIsValid && digest->sha256 != hash) {
         return undo(QString("%1 doesn't match its expected checksum").arg(source));
     }
 
