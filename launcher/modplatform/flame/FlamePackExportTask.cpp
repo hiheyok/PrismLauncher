@@ -73,6 +73,8 @@ void FlamePackExportTask::collectFiles()
         return;
     }
 
+    m_filesToResolve.clear();
+    m_fileHashes.clear();
     pendingHashes.clear();
     resolvedFiles.clear();
 
@@ -98,14 +100,7 @@ void FlamePackExportTask::collectHashes()
 
         if (relative.startsWith("resourcepacks/") &&
             (relative.endsWith(".zip") || relative.endsWith(".zip.disabled"))) {  // is resourcepack
-            auto hashTask = Hashing::createHasher(file.absoluteFilePath(), ModPlatform::ResourceProvider::FLAME);
-            connect(hashTask.get(), &Hashing::Hasher::resultsReady, this, [this, relative, file](QString hash) {
-                if (m_state == Task::State::Running) {
-                    pendingHashes.insert(hash, { relative, file.absoluteFilePath(), relative.endsWith(".zip") });
-                }
-            });
-            connect(hashTask.get(), &Task::failed, this, &FlamePackExportTask::emitFailed);
-            hashingTask->addTask(hashTask);
+            addHashTasks(hashingTask.get(), { relative, file.absoluteFilePath(), relative.endsWith(".zip") }, nullptr, {});
             continue;
         }
 
@@ -115,21 +110,12 @@ void FlamePackExportTask::collectHashes()
             if (!mod || mod->type() == ResourceType::FOLDER) {
                 continue;
             }
+            std::shared_ptr<const Metadata::ModStruct> metadata;
             if (mod->metadata() && mod->metadata()->provider == ModPlatform::ResourceProvider::FLAME) {
-                resolvedFiles.insert(mod->fileinfo().absoluteFilePath(),
-                                     { mod->metadata()->projectId.toInt(), mod->metadata()->fileId.toInt(), mod->enabled(), true,
-                                       mod->metadata()->name, mod->metadata()->slug, mod->authors().join(", ") });
-                continue;
+                metadata = mod->metadata();
             }
-
-            auto hashTask = Hashing::createHasher(mod->fileinfo().absoluteFilePath(), ModPlatform::ResourceProvider::FLAME);
-            connect(hashTask.get(), &Hashing::Hasher::resultsReady, this, [this, mod](QString hash) {
-                if (m_state == Task::State::Running) {
-                    pendingHashes.insert(hash, { mod->name(), mod->fileinfo().absoluteFilePath(), mod->enabled(), true });
-                }
-            });
-            connect(hashTask.get(), &Task::failed, this, &FlamePackExportTask::emitFailed);
-            hashingTask->addTask(hashTask);
+            addHashTasks(hashingTask.get(), { mod->name(), mod->fileinfo().absoluteFilePath(), mod->enabled(), true }, metadata,
+                         mod->authors().join(", "));
         }
     }
     auto progressStep = std::make_shared<TaskStepProgress>();
@@ -138,7 +124,10 @@ void FlamePackExportTask::collectHashes()
         stepProgress(*progressStep);
     });
 
-    connect(hashingTask.get(), &Task::succeeded, this, &FlamePackExportTask::makeApiRequest);
+    connect(hashingTask.get(), &Task::succeeded, this, [this] {
+        resolveFromMetadata();
+        makeApiRequest();
+    });
     connect(hashingTask.get(), &Task::failed, this, [this, progressStep](QString reason) {
         progressStep->state = TaskStepState::Failed;
         stepProgress(*progressStep);
@@ -156,6 +145,40 @@ void FlamePackExportTask::collectHashes()
     });
     connect(hashingTask.get(), &Task::aborted, this, &FlamePackExportTask::emitAborted);
     hashingTask->start();
+}
+
+void FlamePackExportTask::addHashTasks(ConcurrentTask* hashingTask,
+                                       const HashInfo& info,
+                                       std::shared_ptr<const Metadata::ModStruct> metadata,
+                                       const QString& authors)
+{
+    m_filesToResolve.insert(info.path, { info, std::move(metadata), authors });
+
+    // the fingerprint finds candidate files on CurseForge, and sha1/md5 confirm that a candidate has the same content
+    for (auto algorithm : { Hashing::Algorithm::Murmur2, Hashing::Algorithm::Sha1, Hashing::Algorithm::Md5 }) {
+        auto hashTask = makeShared<Hashing::Hasher>(info.path, algorithm);
+        connect(hashTask.get(), &Hashing::Hasher::resultsReady, this, [this, path = info.path, algorithm](QString hash) {
+            if (m_state != Task::State::Running) {
+                return;
+            }
+            m_fileHashes[path].insert(algorithm, hash);
+        });
+        connect(hashTask.get(), &Task::failed, this, &FlamePackExportTask::emitFailed);
+        hashingTask->addTask(hashTask);
+    }
+}
+
+void FlamePackExportTask::resolveFromMetadata()
+{
+    for (const auto& file : m_filesToResolve) {
+        const auto hashes = m_fileHashes.value(file.info.path);
+        if (file.metadata && ExportHashes::matchesMetadata(*file.metadata, hashes)) {
+            resolvedFiles.insert(file.info.path, { file.metadata->projectId.toInt(), file.metadata->fileId.toInt(), file.info.enabled,
+                                                   file.info.isMod, file.metadata->name, file.metadata->slug, file.authors });
+            continue;
+        }
+        pendingHashes.insert(hashes.value(Hashing::Algorithm::Murmur2), file.info);
+    }
 }
 
 void FlamePackExportTask::makeApiRequest()
@@ -208,6 +231,12 @@ void FlamePackExportTask::makeApiRequest()
             auto mod = pendingHashes.find(fingerprint);
             if (mod == pendingHashes.end()) {
                 qWarning() << "Invalid fingerprint from the API response.";
+                continue;
+            }
+
+            // the fingerprint ignores whitespace bytes, so a match can still have different content
+            if (!ExportHashes::matchesCurseForgeFile(fileObj["hashes"].toArray(), m_fileHashes.value(mod->path))) {
+                qWarning() << "CurseForge file for" << mod->name << "has different content, exporting it as an override";
                 continue;
             }
 

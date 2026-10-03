@@ -491,6 +491,8 @@ set(API_SOURCES
     modplatform/flame/FlameAPI.cpp
     modplatform/modrinth/ModrinthAPI.h
     modplatform/modrinth/ModrinthAPI.cpp
+    modplatform/helpers/ExportHashes.h
+    modplatform/helpers/ExportHashes.cpp
     modplatform/helpers/HashUtils.h
     modplatform/helpers/HashUtils.cpp
     modplatform/helpers/OverrideUtils.h
