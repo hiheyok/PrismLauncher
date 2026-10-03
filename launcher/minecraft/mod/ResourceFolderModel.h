@@ -282,4 +282,8 @@ class ResourceFolderModel : public QAbstractListModel {
 
     QMap<int, Task::Ptr> m_activeParseTasks;
     std::atomic<int> m_nextResolutionTicket = 0;
+
+   private:
+    // Keeps the shared store's record of a linked file when it is renamed, such as when it is disabled
+    void renameSharedFile(const QString& from, const QString& to) const;
 };

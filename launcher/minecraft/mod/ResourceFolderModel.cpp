@@ -20,6 +20,7 @@
 #include "minecraft/mod/tasks/ResourceFolderLoadTask.h"
 
 #include "Json.h"
+#include "contentstore/ContentStore.h"
 #include "minecraft/MinecraftInstance.h"
 #include "minecraft/mod/tasks/LocalResourceUpdateTask.h"
 #include "modplatform/flame/FlameAPI.h"
@@ -302,10 +303,12 @@ bool ResourceFolderModel::setResourceEnabled(const QModelIndexList& indexes, Ena
 
         // Preserve the row, but change its ID
         auto oldId = resource->internalId();
+        const auto oldPath = resource->fileinfo().absoluteFilePath();
         if (!resource->enable(action)) {
             succeeded = false;
             continue;
         }
+        renameSharedFile(oldPath, resource->fileinfo().absoluteFilePath());
 
         auto newId = resource->internalId();
 
@@ -316,6 +319,21 @@ bool ResourceFolderModel::setResourceEnabled(const QModelIndexList& indexes, Ena
     }
 
     return succeeded;
+}
+
+void ResourceFolderModel::renameSharedFile(const QString& from, const QString& to) const
+{
+    // in tests the application macro doesn't work
+    auto* application = APPLICATION_DYN;
+    auto* store = application ? application->contentStore() : nullptr;
+    if (!store || !store->isWritable() || !m_instance) {
+        return;
+    }
+    const QDir gameRoot(m_instance->gameRoot());
+    const RefKey key{ store->instanceOwner(m_instance->id()), gameRoot.relativeFilePath(from) };
+    if (auto renamed = store->renameRef(key, gameRoot.relativeFilePath(to)); !renamed) {
+        qWarning() << "Shared store:" << renamed.error();
+    }
 }
 
 bool ResourceFolderModel::update()

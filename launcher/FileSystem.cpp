@@ -654,14 +654,14 @@ void create_link::runPrivileged(const QString& offset)
     m_linked = 0;  // reset counter
     m_pathResults.clear();
     m_linksToMake.clear();
-
-    bool gotResults = false;
+    // a member, as the handlers below run after this function returned
+    m_gotPrivilegedResults = false;
 
     makeLinkList(offset);
 
     QString serverName = BuildConfig.LAUNCHER_APP_BINARY_NAME + "_filelink_server" + StringUtils::getRandomAlphaNumeric();
 
-    connect(&m_linkServer, &QLocalServer::newConnection, this, [this, &gotResults]() {
+    connect(&m_linkServer, &QLocalServer::newConnection, this, [this]() {
         qDebug() << "Client connected, sending out pairs";
         // construct block of data to send
         QByteArray block;
@@ -728,7 +728,7 @@ void create_link::runPrivileged(const QString& offset)
                 }
                 m_pathResults.append(result);
             }
-            gotResults = true;
+            m_gotPrivilegedResults = true;
             qDebug() << "results received, closing connection";
             clientConnection->close();
         });
@@ -741,11 +741,12 @@ void create_link::runPrivileged(const QString& offset)
     qDebug() << "Listening on pipe" << serverName;
     if (!m_linkServer.listen(serverName)) {
         qDebug() << "Unable to start local pipe server on" << serverName << ":" << m_linkServer.errorString();
+        emit finishedPrivileged(false);
         return;
     }
 
     auto* linkFileProcess = new ExternalLinkFileProcess(serverName, m_useHardLinks, this);
-    connect(linkFileProcess, &ExternalLinkFileProcess::processExited, this, [this, &gotResults]() { emit finishedPrivileged(gotResults); });
+    connect(linkFileProcess, &ExternalLinkFileProcess::processExited, this, [this]() { emit finishedPrivileged(m_gotPrivilegedResults); });
     connect(linkFileProcess, &ExternalLinkFileProcess::finished, linkFileProcess, &QObject::deleteLater);
 
     linkFileProcess->start();

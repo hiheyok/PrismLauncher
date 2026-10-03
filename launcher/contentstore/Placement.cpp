@@ -1,0 +1,727 @@
+#include "contentstore/ContentStore.h"
+
+#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QSet>
+#include <QUuid>
+
+#include <set>
+#include <vector>
+
+#include "FileSystemPrimitives.h"
+#include "contentstore/ObjectFiles.h"
+#include "contentstore/SymlinkAllowList.h"
+
+#if defined(Q_OS_WIN)
+#include <QEventLoop>
+
+#include "FileSystem.h"
+#endif
+
+namespace {
+struct PathState {
+    bool exists = false;
+    bool isSymbolicLink = false;
+    bool isDirectory = false;
+    QString target;
+};
+
+PathState inspect(const QString& path)
+{
+    PathState state;
+    const QFileInfo info(path);
+    state.isSymbolicLink = info.isSymbolicLink();
+    state.exists = info.exists() || state.isSymbolicLink;
+    state.isDirectory = !state.isSymbolicLink && info.isDir();
+    if (state.isSymbolicLink) {
+        state.target = info.symLinkTarget();
+    }
+    return state;
+}
+
+// A name for a new file in dir that is hidden from mod loaders and the resource lists
+QString temporaryName(const QString& dir)
+{
+    return QDir(dir).filePath(".prism-new-" + QUuid::createUuid().toString(QUuid::Id128).left(12));
+}
+
+Result<> createEmptyFile(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+        return std::unexpected(QString("Failed to create %1: %2").arg(path, file.errorString()));
+    }
+    return {};
+}
+
+// Removes a temporary file or link, which may be read-only
+void discardFile(const QString& path)
+{
+    if (QFileInfo::exists(path) || QFileInfo(path).isSymbolicLink()) {
+        if (auto deleted = FS::deleteLink(path); !deleted) {
+            qWarning() << "Shared store:" << deleted.error();
+        }
+    }
+}
+
+// Whether the destination still holds the file found when the placement began. Linking a stored file changes the
+// change time of its other links, so it is only compared when the destination isn't a link to the stored file.
+bool unchanged(const StoredIdentity& recorded, const FS::FileIdentity& now, bool compareChangeTime)
+{
+    const auto current = StoredIdentity::from(now);
+    return current.volume == recorded.volume && current.fileId == recorded.fileId && current.size == recorded.size &&
+           current.modifiedTime == recorded.modifiedTime && (!compareChangeTime || current.changeTime == recorded.changeTime);
+}
+
+QString interruptedError()
+{
+    return QString("Interrupted for testing");
+}
+}  // namespace
+
+ContentStore::LinkMode ContentStore::linkModeFromSetting(const QString& value)
+{
+    if (value == "HardLinks") {
+        return LinkMode::HardLinks;
+    }
+    if (value == "Symlinks") {
+        return LinkMode::SymbolicLinks;
+    }
+    return LinkMode::Auto;
+}
+
+QString ContentStore::Destination::path() const
+{
+    return QDir(root).absoluteFilePath(relativePath);
+}
+
+QString ContentStore::generationPath(const QString& hash, const Generation& generation) const
+{
+    return generation.retiredPath.isEmpty() ? objectPath(hash) : QDir(m_storeDir).absoluteFilePath(generation.retiredPath);
+}
+
+bool ContentStore::holdsLink(const QString& path, const Ref& ref) const
+{
+    const auto entry = m_table.entries().find(ref.hash);
+    if (entry == m_table.entries().end()) {
+        return false;
+    }
+    const auto* generation = entry->generation(ref.generation);
+    if (!generation) {
+        return false;
+    }
+    const auto state = inspect(path);
+    if (ref.kind == LinkKind::Symbolic) {
+        return state.isSymbolicLink && ObjectFiles::samePath(state.target, generationPath(ref.hash, *generation));
+    }
+    if (!state.exists || state.isSymbolicLink) {
+        return false;
+    }
+    const auto id = FS::fileId(path);
+    return id && generation->identity.sameFile(*id);
+}
+
+std::optional<QJsonObject> ContentStore::recaptureIdentity(const QString& hash, int generation) const
+{
+    const auto entry = m_table.entries().find(hash);
+    if (entry == m_table.entries().end()) {
+        return std::nullopt;
+    }
+    const auto* recorded = entry->generation(generation);
+    if (!recorded) {
+        return std::nullopt;
+    }
+    const auto identity = FS::identity(generationPath(hash, *recorded));
+    // only for the same file: a different one is for verification to look at
+    if (!identity || !recorded->identity.sameFile(identity->fileId)) {
+        return std::nullopt;
+    }
+    const auto current = StoredIdentity::from(*identity);
+    if (current == recorded->identity) {
+        return std::nullopt;
+    }
+    return RefRecord::updateIdentity(hash, generation, current);
+}
+
+Result<PlacementKind> ContentStore::placeAt(const Placement& placement, const PlaceOptions& options)
+{
+    return place({ placement }, options).first();
+}
+
+QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placements, const PlaceOptions& options)
+{
+    struct Item {
+        Placement placement;
+        QString path;
+        QString dir;
+        qint64 size = 0;
+        Transaction transaction;
+        Lease lease;
+        // the recorded link that was at the destination
+        std::optional<Ref> oldRef;
+        bool oldIsRegularFile = false;
+        // the destination already was a hard link to the stored file
+        bool oldIsObject = false;
+        bool begun = false;
+        bool prepared = false;
+        bool swapped = false;
+        std::optional<PlacementKind> created;
+        std::optional<QString> error;
+
+        void fail(const QString& message)
+        {
+            if (!error) {
+                error = message;
+            }
+        }
+    };
+
+    const auto mode = options.mode.value_or(m_linkMode);
+    std::vector<Item> items(placements.size());
+    const auto results = [&items] {
+        QList<Result<PlacementKind>> list;
+        for (const auto& item : items) {
+            if (item.error) {
+                list.append(std::unexpected(*item.error));
+            } else if (item.created) {
+                list.append(*item.created);
+            } else {
+                list.append(std::unexpected(QString("%1 wasn't placed").arg(item.path)));
+            }
+        }
+        return list;
+    };
+    const auto interruptedResults = [&items] {
+        return QList<Result<PlacementKind>>(static_cast<qsizetype>(items.size()), std::unexpected(interruptedError()));
+    };
+
+    // 1. Record what is at each destination, and begin the placements. Nothing on disk changes yet.
+    {
+        QMutexLocker locker(&m_mutex);
+        std::set<RefKey> busy;
+        for (const auto& transaction : m_table.transactions()) {
+            busy.insert(transaction.key);
+        }
+        QMap<QString, QString> ownerRoots = m_table.owners();
+        QList<QJsonObject> records;
+        qint64 nextId = m_table.nextTransactionId();
+
+        for (qsizetype i = 0; i < placements.size(); i++) {
+            auto& item = items[static_cast<std::size_t>(i)];
+            item.placement = placements[i];
+            const auto& destination = item.placement.destination;
+            const auto& hash = item.placement.hash;
+            item.path = destination.path();
+            item.dir = QFileInfo(item.path).absolutePath();
+
+            const auto begin = [&]() -> Result<> {
+                if (m_state != State::Writable) {
+                    return std::unexpected(QString("The shared store can't be changed"));
+                }
+                if (!busy.insert(destination.key()).second) {
+                    return std::unexpected(QString("%1 is already being changed").arg(item.path));
+                }
+                const auto entry = m_table.entries().find(hash);
+                if (entry == m_table.entries().end() || !entry->current) {
+                    return std::unexpected(QString("%1 isn't stored").arg(hash));
+                }
+                const auto objectId = FS::fileId(objectPath(hash));
+                if (!objectId || !entry->current->identity.sameFile(*objectId)) {
+                    return std::unexpected(QString("The stored copy of %1 is missing or was replaced").arg(hash));
+                }
+                item.size = entry->size;
+
+                const auto state = inspect(item.path);
+                if (state.isDirectory) {
+                    return std::unexpected(QString("%1 is a folder").arg(item.path));
+                }
+                std::optional<StoredIdentity> oldIdentity;
+                const auto ref = m_table.ref(destination.key());
+                if (state.exists) {
+                    TRY_INTO(const auto identity, FS::identity(item.path))
+                    if (ref && holdsLink(item.path, *ref)) {
+                        item.oldRef = ref;
+                    } else if (!item.placement.replaces) {
+                        return std::unexpected(QString("%1 isn't a shared file, and replacing it wasn't confirmed").arg(item.path));
+                    } else if (*item.placement.replaces != identity) {
+                        return std::unexpected(QString("%1 changed since it was chosen to be replaced").arg(item.path));
+                    }
+                    oldIdentity = StoredIdentity::from(identity);
+                    item.oldIsRegularFile = !state.isSymbolicLink;
+                    item.oldIsObject = !state.isSymbolicLink && entry->current->identity.sameFile(identity.fileId);
+                }
+                if (!QDir().mkpath(item.dir)) {
+                    return std::unexpected(QString("Could not create %1").arg(item.dir));
+                }
+
+                item.transaction = { nextId++,
+                                     destination.key(),
+                                     temporaryName(item.dir),
+                                     ref ? std::optional(ref->hash) : std::nullopt,
+                                     oldIdentity,
+                                     hash,
+                                     std::nullopt,
+                                     {} };
+                item.lease = lease(hash);
+                if (ownerRoots.value(destination.owner) != destination.root) {
+                    records.append(RefRecord::owner(destination.owner, destination.root));
+                    ownerRoots[destination.owner] = destination.root;
+                }
+                records.append(RefRecord::begin(item.transaction));
+                return {};
+            };
+            if (auto begun = begin(); !begun) {
+                item.fail(begun.error());
+            } else {
+                item.begun = true;
+            }
+        }
+
+        if (!records.isEmpty()) {
+            if (auto committed = commitLocked(records); !committed) {
+                for (auto& item : items) {
+                    item.begun = false;
+                    item.fail(committed.error());
+                }
+            }
+        }
+    }
+    if (interrupted(PlacementStep::Begun)) {
+        return interruptedResults();
+    }
+
+    // 2. Create the new file or link next to each destination. Without the lock, as it can wait for the user.
+    const auto createCopy = [this](Item& item) {
+        auto copied = createEmptyFile(item.transaction.temporaryPath).and_then([&] {
+            return ObjectFiles::copyAndHash(objectPath(item.placement.hash), item.transaction.temporaryPath);
+        });
+        if (!copied) {
+            item.fail(copied.error());
+            return;
+        }
+        if (*copied != item.placement.hash || QFileInfo(item.transaction.temporaryPath).size() != item.size) {
+            item.fail(QString("The copy of %1 doesn't match it").arg(item.placement.hash));
+            return;
+        }
+        if (auto flushed = FS::flushFile(item.transaction.temporaryPath); !flushed) {
+            item.fail(flushed.error());
+            return;
+        }
+        item.created = PlacementKind::Local;
+    };
+    const auto fallBack = [&options, &createCopy](Item& item, const QString& linkError) {
+        if (options.allowCopy) {
+            createCopy(item);
+        } else {
+            item.fail(linkError);
+        }
+    };
+
+    QList<Item*> elevated;
+    for (auto& item : items) {
+        if (!item.begun) {
+            continue;
+        }
+        const auto object = objectPath(item.placement.hash);
+        const auto& temporary = item.transaction.temporaryPath;
+        QString linkError;
+        if (mode != LinkMode::SymbolicLinks) {
+            auto linked = FS::createHardLink(object, temporary);
+            if (linked) {
+                item.created = PlacementKind::Hard;
+                continue;
+            }
+            linkError = linked.error();
+        }
+        if (mode != LinkMode::HardLinks) {
+            auto linked = FS::createSymbolicLink(object, temporary);
+            if (linked) {
+                item.created = PlacementKind::Symbolic;
+                continue;
+            }
+            if (linked.error().failure == FS::LinkFailure::NeedsPrivilege && m_privilegedLinker) {
+                elevated.append(&item);
+                continue;
+            }
+            linkError = linked.error().message;
+        }
+        fallBack(item, linkError);
+    }
+
+    if (!elevated.isEmpty()) {
+        // one request for every link of the batch, so the user is asked once
+        QList<std::pair<QString, QString>> links;
+        for (const auto* item : elevated) {
+            links.append({ objectPath(item->placement.hash), item->transaction.temporaryPath });
+        }
+        const auto linked = m_privilegedLinker(links);
+        for (qsizetype i = 0; i < elevated.size(); i++) {
+            auto& item = *elevated[i];
+            if (i < linked.size() && linked[i]) {
+                item.created = PlacementKind::Symbolic;
+            } else {
+                discardFile(item.transaction.temporaryPath);
+                fallBack(item, i < linked.size() ? linked[i].error() : QString("Could not link %1").arg(item.path));
+            }
+        }
+    }
+    if (interrupted(PlacementStep::Created)) {
+        return interruptedResults();
+    }
+
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        for (auto& item : items) {
+            item.fail(QString("The shared store can't be changed"));
+        }
+        return results();
+    }
+
+    // 3. Check what was created and durably record it, so a crash after the swap is finished from the journal
+    // stored files whose links changed, by hash and generation
+    std::set<std::pair<QString, int>> recapture;
+    for (auto& item : items) {
+        if (!item.begun || item.error || !item.created) {
+            continue;
+        }
+        const auto& temporary = item.transaction.temporaryPath;
+        const auto entry = m_table.entries().find(item.placement.hash);
+        if (*item.created == PlacementKind::Hard && entry != m_table.entries().end() && entry->current) {
+            // linking changed the stored file's change time
+            recapture.insert({ item.placement.hash, entry->current->id });
+        }
+        if (*item.created == PlacementKind::Symbolic) {
+            const auto state = inspect(temporary);
+            if (!state.isSymbolicLink || !ObjectFiles::samePath(state.target, objectPath(item.placement.hash))) {
+                item.fail(QString("The link created for %1 doesn't point to the stored file").arg(item.path));
+                continue;
+            }
+            item.transaction.expected = QFileInfo(objectPath(item.placement.hash)).absoluteFilePath();
+            continue;
+        }
+        const auto id = FS::fileId(temporary);
+        if (!id) {
+            item.fail(id.error());
+            continue;
+        }
+        if (*item.created == PlacementKind::Hard &&
+            (entry == m_table.entries().end() || !entry->current || !entry->current->identity.sameFile(*id))) {
+            item.fail(QString("The link created for %1 isn't the stored file").arg(item.path));
+            continue;
+        }
+        item.transaction.expected = fileIdString(*id);
+    }
+    QMap<QString, Result<>> flushedDirs;
+    for (auto& item : items) {
+        if (item.begun && !item.error) {
+            if (!flushedDirs.contains(item.dir)) {
+                flushedDirs[item.dir] = FS::flushDir(item.dir);
+            }
+            if (const auto& flushed = flushedDirs[item.dir]; !flushed) {
+                item.fail(flushed.error());
+            }
+        }
+    }
+    QList<QJsonObject> records;
+    for (auto& item : items) {
+        if (!item.begun) {
+            continue;
+        }
+        if (item.error) {
+            discardFile(item.transaction.temporaryPath);
+            records.append(RefRecord::abort(item.transaction.id));
+            item.begun = false;
+            continue;
+        }
+        records.append(RefRecord::prepared(item.transaction.id, *item.created, item.transaction.expected));
+        item.prepared = true;
+    }
+    if (!records.isEmpty()) {
+        if (auto committed = commitLocked(records); !committed) {
+            // the open placements are finished from the journal when the store is opened again
+            for (auto& item : items) {
+                if (item.prepared) {
+                    item.fail(committed.error());
+                }
+            }
+            return results();
+        }
+    }
+    if (interrupted(PlacementStep::Prepared)) {
+        return interruptedResults();
+    }
+
+    // 4. Swap each new file into place, if the destination still holds what was recorded
+    records.clear();
+    for (auto& item : items) {
+        if (!item.prepared) {
+            continue;
+        }
+        const auto swap = [&item]() -> Result<> {
+            // no other program can start writing to the destination between the check and the swap
+            std::optional<FS::PinnedFile> pin;
+            if (item.transaction.oldIdentity) {
+                if (item.oldIsRegularFile) {
+                    auto pinned = FS::pinFile(item.path);
+                    if (!pinned) {
+                        return std::unexpected(pinned.error());
+                    }
+                    pin = std::move(*pinned);
+                }
+                TRY_INTO(const auto now, FS::identity(item.path))
+                if (!unchanged(*item.transaction.oldIdentity, now, !item.oldIsObject)) {
+                    return std::unexpected(QString("%1 changed while it was being replaced").arg(item.path));
+                }
+            } else if (inspect(item.path).exists) {
+                return std::unexpected(QString("A file appeared at %1 while it was being placed").arg(item.path));
+            }
+            return FS::replaceFile(item.transaction.temporaryPath, item.path);
+        };
+        if (auto swapped = swap(); !swapped) {
+            item.fail(swapped.error());
+            discardFile(item.transaction.temporaryPath);
+            records.append(RefRecord::abort(item.transaction.id));
+            continue;
+        }
+        item.swapped = true;
+        if (interrupted(PlacementStep::Swapped)) {
+            return interruptedResults();
+        }
+        if (item.oldRef && item.oldRef->kind == LinkKind::Hard) {
+            // the stored file it linked to lost a link, which changes its change time
+            recapture.insert({ item.oldRef->hash, item.oldRef->generation });
+        }
+    }
+
+    flushedDirs.clear();
+    for (auto& item : items) {
+        if (item.swapped && !flushedDirs.contains(item.dir)) {
+            // the swap can't be undone without the old file, so it is recorded even if this fails
+            flushedDirs[item.dir] = FS::flushDir(item.dir);
+            if (const auto& flushed = flushedDirs[item.dir]; !flushed) {
+                qWarning() << "Shared store:" << flushed.error();
+            }
+        }
+    }
+    for (auto& item : items) {
+        if (item.swapped) {
+            records.append(RefRecord::commit(item.transaction.id));
+        }
+    }
+    for (const auto& [hash, generation] : recapture) {
+        if (auto record = recaptureIdentity(hash, generation)) {
+            records.append(*record);
+        }
+    }
+    if (!records.isEmpty()) {
+        if (auto committed = commitLocked(records); !committed) {
+            for (auto& item : items) {
+                if (item.swapped) {
+                    item.fail(committed.error());
+                }
+            }
+            return results();
+        }
+    }
+    locker.unlock();
+
+    // Minecraft refuses symbolically linked packs unless their target is allowed
+    QSet<QString> roots;
+    for (const auto& item : items) {
+        if (item.swapped && !item.error && *item.created == PlacementKind::Symbolic) {
+            roots.insert(item.placement.destination.root);
+        }
+    }
+    for (const auto& root : roots) {
+        if (auto allowed = SymlinkAllowList::allow(root, m_storeDir); !allowed) {
+            qWarning() << "Shared store:" << allowed.error();
+        }
+    }
+    return results();
+}
+
+Result<ContentStore::UnshareResult> ContentStore::unshare(const RefKey& key)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    const auto ref = m_table.ref(key);
+    const auto root = m_table.owners().find(key.owner);
+    if (!ref || root == m_table.owners().end()) {
+        return std::unexpected(QString("%1 isn't a shared file").arg(key.relativePath));
+    }
+    for (const auto& transaction : m_table.transactions()) {
+        if (transaction.key == key) {
+            return std::unexpected(QString("%1 is already being changed").arg(key.relativePath));
+        }
+    }
+    const auto path = QDir(*root).absoluteFilePath(key.relativePath);
+    const auto entry = m_table.entries().find(ref->hash);
+    const auto* generation = entry != m_table.entries().end() ? entry->generation(ref->generation) : nullptr;
+    if (!generation) {
+        return std::unexpected(QString("%1 links to a file the store doesn't know").arg(path));
+    }
+
+    // copy only from the recorded link, never from a file that replaced it
+    if (!holdsLink(path, *ref)) {
+        TRY(commitLocked({ RefRecord::setRefState(key, inspect(path).exists ? RefState::Replaced : RefState::Missing) }))
+        return std::unexpected(QString("%1 no longer holds the shared file").arg(path));
+    }
+    TRY_INTO(const auto before, FS::identity(path))
+    const bool symbolic = ref->kind == LinkKind::Symbolic;
+    // the bytes the instance sees, which for a damaged stored file aren't the bytes its hash names
+    const auto source = symbolic ? generationPath(ref->hash, *generation) : path;
+    const auto dir = QFileInfo(path).absolutePath();
+
+    const Transaction transaction{ m_table.nextTransactionId(),  key, temporaryName(dir), ref->hash,
+                                   StoredIdentity::from(before), {},  std::nullopt,       {} };
+    const auto held = lease(ref->hash);
+    TRY(commitLocked({ RefRecord::begin(transaction) }))
+    if (interrupted(PlacementStep::Begun)) {
+        return std::unexpected(interruptedError());
+    }
+
+    const auto rollback = [&](const QString& error) -> Result<UnshareResult> {
+        discardFile(transaction.temporaryPath);
+        if (auto aborted = commitLocked({ RefRecord::abort(transaction.id) }); !aborted) {
+            return std::unexpected(QString("%1, and %2").arg(error, aborted.error()));
+        }
+        return std::unexpected(error);
+    };
+
+    const auto& temporary = transaction.temporaryPath;
+    QString contentHash;
+    auto copied = createEmptyFile(temporary)
+                      .and_then([&] { return ObjectFiles::copyAndHash(source, temporary); })
+                      .and_then([&](const QString& hash) {
+                          contentHash = hash;
+                          return FS::flushFile(temporary);
+                      })
+                      // the copy is checked against the bytes read, not the stored hash
+                      .and_then([&] { return ObjectFiles::sha256(temporary); })
+                      .and_then([&](const QString& copyHash) -> Result<> {
+                          if (copyHash != contentHash) {
+                              return std::unexpected(QString("The copy of %1 doesn't match it").arg(path));
+                          }
+                          return FS::flushDir(dir);
+                      })
+                      .and_then([&] { return FS::fileId(temporary); });
+    if (!copied) {
+        return rollback(copied.error());
+    }
+    if (interrupted(PlacementStep::Created)) {
+        return std::unexpected(interruptedError());
+    }
+    TRY(commitLocked({ RefRecord::prepared(transaction.id, PlacementKind::Local, fileIdString(*copied)) }))
+    if (interrupted(PlacementStep::Prepared)) {
+        return std::unexpected(interruptedError());
+    }
+
+    auto swapped = [&]() -> Result<> {
+        std::optional<FS::PinnedFile> pin;
+        if (!symbolic) {
+            auto pinned = FS::pinFile(path);
+            if (!pinned) {
+                return std::unexpected(pinned.error());
+            }
+            pin = std::move(*pinned);
+        }
+        TRY_INTO(const auto now, FS::identity(path))
+        if (now != before) {
+            return std::unexpected(QString("%1 changed while it was being copied").arg(path));
+        }
+        return FS::replaceFile(temporary, path);
+    }();
+    if (!swapped) {
+        return rollback(swapped.error());
+    }
+    if (interrupted(PlacementStep::Swapped)) {
+        return std::unexpected(interruptedError());
+    }
+    if (auto flushed = FS::flushDir(dir); !flushed) {
+        qWarning() << "Shared store:" << flushed.error();
+    }
+
+    QList<QJsonObject> records{ RefRecord::commit(transaction.id) };
+    if (!symbolic) {
+        // the stored file lost a link, which changes its change time
+        if (auto record = recaptureIdentity(ref->hash, ref->generation)) {
+            records.append(*record);
+        }
+    }
+    TRY(commitLocked(records))
+    return UnshareResult{ ref->hash, ref->generation, contentHash };
+}
+
+Result<> ContentStore::renameRef(const RefKey& from, const QString& newRelativePath)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    const auto ref = m_table.ref(from);
+    const RefKey to{ from.owner, newRelativePath };
+    if (!ref || to == from) {
+        return {};
+    }
+    if (m_table.ref(to)) {
+        return std::unexpected(QString("%1 is already a shared file").arg(newRelativePath));
+    }
+    for (const auto& transaction : m_table.transactions()) {
+        if (transaction.key == from || transaction.key == to) {
+            return std::unexpected(QString("%1 is being changed").arg(from.relativePath));
+        }
+    }
+    const auto root = m_table.owners().find(from.owner);
+    if (root == m_table.owners().end()) {
+        return std::unexpected(QString("The folder of %1 isn't known").arg(from.owner));
+    }
+    if (!holdsLink(QDir(*root).absoluteFilePath(newRelativePath), *ref)) {
+        return std::unexpected(QString("%1 doesn't hold the shared file of %2").arg(newRelativePath, from.relativePath));
+    }
+    return commitLocked({ RefRecord::moveRef(from, newRelativePath) });
+}
+
+ContentStore::PrivilegedLinker ContentStore::defaultPrivilegedLinker()
+{
+#if defined(Q_OS_WIN)
+    return [](const QList<std::pair<QString, QString>>& links) {
+        QList<FS::LinkPair> pairs;
+        for (const auto& [target, link] : links) {
+            pairs.append({ .src = target, .dst = link });
+        }
+        FS::create_link linker(pairs);
+        linker.useHardLinks(false).linkRecursively(false);
+
+        // the helper asks the user for elevated rights once, then creates every link
+        QEventLoop loop;
+        bool finished = false;
+        QObject::connect(&linker, &FS::create_link::finishedPrivileged, &loop, [&finished, &loop](bool) {
+            finished = true;
+            loop.quit();
+        });
+        linker.runPrivileged();
+        if (!finished) {
+            loop.exec();
+        }
+
+        QList<Result<>> results;
+        const auto created = linker.getResults();
+        for (const auto& [target, link] : links) {
+            Result<> result = std::unexpected(QString("Could not link %1 to %2 with elevated rights").arg(link, target));
+            for (const auto& linked : created) {
+                if (ObjectFiles::samePath(linked.dst, link)) {
+                    result = linked.err_value == 0 ? Result<>{} : Result<>(std::unexpected(linked.err_msg));
+                }
+            }
+            results.append(result);
+        }
+        return results;
+    };
+#else
+    return nullptr;
+#endif
+}

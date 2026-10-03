@@ -19,4 +19,7 @@ Result<QString> copyAndHash(const QString& source, const QString& target);
 
 bool makeReadOnly(const QString& path);
 
+// Whether both paths name the same location, compared the way the platform compares names
+bool samePath(const QString& first, const QString& second);
+
 }  // namespace ObjectFiles

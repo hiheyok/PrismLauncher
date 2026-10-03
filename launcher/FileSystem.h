@@ -283,6 +283,7 @@ class create_link : public QObject {
     QList<LinkPair> m_linksToMake;
 
     int m_linked{};
+    bool m_gotPrivilegedResults = false;
     bool m_debug = false;
     std::error_code m_osErr;
 

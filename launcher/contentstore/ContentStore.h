@@ -7,8 +7,10 @@
 #include <QString>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "FileSystemPrimitives.h"
 #include "Result.h"
@@ -89,6 +91,63 @@ class ContentStore {
         Lease lease;
     };
 
+    // Which kinds of links placements try, after which they fall back to a copy
+    enum class LinkMode : std::uint8_t {
+        // hard links, then symbolic links
+        Auto,
+        HardLinks,
+        SymbolicLinks,
+    };
+    // Reads the SharedStoreLinkMode setting
+    static LinkMode linkModeFromSetting(const QString& value);
+
+    // A path in the folder of a ref owner. For instances, the root is the game folder, so the relative paths are like
+    // "mods/foo.jar".
+    struct Destination {
+        QString owner;
+        QString root;
+        QString relativePath;
+
+        RefKey key() const { return { owner, relativePath }; }
+        QString path() const;
+    };
+
+    struct Placement {
+        Destination destination;
+        QString hash;
+        // The file the user chose to replace, when the destination doesn't hold a link to the store. The placement
+        // fails if anything else is there by the time it is replaced.
+        std::optional<FS::FileIdentity> replaces;
+    };
+
+    struct PlaceOptions {
+        // the store's link mode when not set
+        std::optional<LinkMode> mode;
+        // put a writable copy at the destination when it can't be linked, instead of failing
+        bool allowCopy = true;
+    };
+
+    struct UnshareResult {
+        // the stored file the destination was linked to
+        QString hash;
+        int generation = 0;
+        // the SHA-256 of the bytes now in the local copy, which differs from hash for a damaged stored file
+        QString contentHash;
+    };
+
+    // Creates symbolic links, each given as a target and a link, with elevated rights. Called once for all the links of
+    // a batch, so the user is asked once. Returns the result of each link.
+    using PrivilegedLinker = std::function<QList<Result<>>(const QList<std::pair<QString, QString>>& links)>;
+
+    // Points in a placement after which a test can stop it, as if the launcher crashed there
+    enum class PlacementStep : std::uint8_t {
+        Begun,
+        // the temporary file or link was created
+        Created,
+        Prepared,
+        Swapped,
+    };
+
     ContentStore(QString storeDir, QString dataDir);
 
     // Opens the store, or tries again if it was busy
@@ -117,6 +176,33 @@ class ContentStore {
     // Puts a file into the store, or finds the identical file already stored. Only while writable.
     Result<IngestResult> ingest(const QString& source, IngestMode mode, const std::optional<PrecomputedDigest>& digest = {});
 
+    // Puts stored files at the destinations, replacing what is there, and records the links. Each placement either
+    // completes or leaves its destination as it was. A placement that ends up as a copy records no link. Placements
+    // that need a symbolic link the user isn't allowed to create share one request for elevated rights.
+    QList<Result<PlacementKind>> place(const QList<Placement>& placements, const PlaceOptions& options);
+    QList<Result<PlacementKind>> place(const QList<Placement>& placements) { return place(placements, PlaceOptions{}); }
+    Result<PlacementKind> placeAt(const Placement& placement, const PlaceOptions& options);
+    Result<PlacementKind> placeAt(const Placement& placement) { return placeAt(placement, PlaceOptions{}); }
+
+    // Replaces the link at key with a writable copy of the bytes it shows, and forgets the link. Fails without changing
+    // anything if the path doesn't hold the recorded link.
+    Result<UnshareResult> unshare(const RefKey& key);
+
+    // Records that the link at from was renamed to newRelativePath in the same owner, such as when a mod is disabled.
+    // Does nothing if from isn't a recorded link.
+    Result<> renameRef(const RefKey& from, const QString& newRelativePath);
+
+    // The owner of the links of an instance used by this launcher
+    QString instanceOwner(const QString& instanceId) const { return m_clientId + ":" + instanceId; }
+
+    void setLinkMode(LinkMode mode) { m_linkMode = mode; }
+    LinkMode linkMode() const { return m_linkMode; }
+    void setPrivilegedLinker(PrivilegedLinker linker) { m_privilegedLinker = std::move(linker); }
+    // Creates the links with the launcher's elevated helper, on Windows; null elsewhere
+    static PrivilegedLinker defaultPrivilegedLinker();
+
+    void setInterruptionForTesting(std::function<bool(PlacementStep)> interruption) { m_interruption = std::move(interruption); }
+
     Lease lease(const QString& hash);
     int leaseCount(const QString& hash) const;
 
@@ -137,6 +223,13 @@ class ContentStore {
     State setState(State state, const QString& message = {});
     // Stores the candidate file under hash, or finds the stored file already there. Called with m_mutex locked.
     Result<IngestResult> publishLocked(const QString& candidate, const QString& hash, qint64 size);
+    // Where the file of a generation is
+    QString generationPath(const QString& hash, const Generation& generation) const;
+    // Whether path holds the link that ref records
+    bool holdsLink(const QString& path, const Ref& ref) const;
+    // Records the identity of the current file of hash again, after the launcher changed its links
+    std::optional<QJsonObject> recaptureIdentity(const QString& hash, int generation) const;
+    bool interrupted(PlacementStep step) const { return m_interruption && m_interruption(step); }
 
     QString m_storeDir;
     QString m_dataDir;
@@ -150,4 +243,7 @@ class ContentStore {
     std::shared_ptr<LeaseCounts> m_leases = std::make_shared<LeaseCounts>();
     State m_state = State::Closed;
     QString m_statusMessage;
+    LinkMode m_linkMode = LinkMode::Auto;
+    PrivilegedLinker m_privilegedLinker;
+    std::function<bool(PlacementStep)> m_interruption;
 };

@@ -53,6 +53,9 @@ struct StoreEntry {
     std::optional<qint64> orphanSince;
     bool hadSymbolicLinks = false;
 
+    // the current or a retired generation
+    const Generation* generation(int id) const;
+
     bool operator==(const StoreEntry&) const = default;
 };
 
@@ -116,6 +119,8 @@ QJsonObject prepared(qint64 transactionId, PlacementKind kind, const QString& ex
 QJsonObject commit(qint64 transactionId);
 QJsonObject abort(qint64 transactionId);
 QJsonObject removeRef(const RefKey& key);
+// the link was renamed within its owner, such as when a mod is disabled
+QJsonObject moveRef(const RefKey& key, const QString& relativePath);
 QJsonObject setRefState(const RefKey& key, RefState state);
 QJsonObject destroying(const QString& hash, int generation);
 QJsonObject destroyed(const QString& hash, int generation);
