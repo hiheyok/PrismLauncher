@@ -234,6 +234,14 @@ class IngestTest : public QObject {
         const auto object = m_store->objectPath(first->hash);
         makeWritable(object);
         QVERIFY(writeFile(object, "tampered"));
+        // the same size, so only the modification time shows the change; set it explicitly, as file system clocks can
+        // be too coarse to tell two quick writes apart. A change that keeps every part of the identity is only found by
+        // hashing the whole store.
+        {
+            QFile file(object);
+            QVERIFY(file.open(QIODevice::ReadWrite));
+            QVERIFY(file.setFileTime(QDateTime::currentDateTime().addSecs(3600), QFileDevice::FileModificationTime));
+        }
 
         QVERIFY(!m_store->ingest(path("downloads/b.jar"), ContentStore::IngestMode::Copy));
         QCOMPARE(readFile(path("downloads/b.jar")), "original");
