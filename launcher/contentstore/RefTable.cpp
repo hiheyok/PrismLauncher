@@ -204,14 +204,27 @@ QJsonObject client(const QString& clientId, const QString& dataDir, qint64 lastS
     return { { "type", "client" }, { "client", clientId }, { "dataDir", dataDir }, { "lastSeen", lastSeen } };
 }
 
-QJsonObject owner(const QString& owner, const QString& root)
+QJsonObject owner(const QString& owner, const QString& root, const QString& volume)
 {
-    return { { "type", "owner" }, { "owner", owner }, { "root", root } };
+    QJsonObject json{ { "type", "owner" }, { "owner", owner }, { "root", root } };
+    if (!volume.isEmpty()) {
+        json["volume"] = volume;
+    }
+    return json;
 }
 
-QJsonObject publish(const QString& hash, qint64 size, const Generation& generation)
+QJsonObject removeOwner(const QString& owner)
 {
-    return { { "type", "publish" }, { "hash", hash }, { "size", size }, { "generation", generationToJson(generation) } };
+    return { { "type", "removeOwner" }, { "owner", owner } };
+}
+
+QJsonObject publish(const QString& hash, qint64 size, const Generation& generation, bool unrecorded)
+{
+    QJsonObject json{ { "type", "publish" }, { "hash", hash }, { "size", size }, { "generation", generationToJson(generation) } };
+    if (unrecorded) {
+        json["unrecorded"] = true;
+    }
+    return json;
 }
 
 QJsonObject updateIdentity(const QString& hash, int generation, const StoredIdentity& identity)
@@ -239,6 +252,15 @@ QJsonObject abort(qint64 transactionId)
     return { { "type", "abort" }, { "transaction", transactionId } };
 }
 
+QJsonObject addRef(const RefKey& key, const Ref& ref)
+{
+    return { { "type", "addRef" },
+             { "key", keyToJson(key) },
+             { "hash", ref.hash },
+             { "kind", toString(ref.kind) },
+             { "generation", ref.generation } };
+}
+
 QJsonObject removeRef(const RefKey& key)
 {
     return { { "type", "removeRef" }, { "key", keyToJson(key) } };
@@ -252,6 +274,30 @@ QJsonObject moveRef(const RefKey& key, const QString& relativePath)
 QJsonObject setRefState(const RefKey& key, RefState state)
 {
     return { { "type", "setRefState" }, { "key", keyToJson(key) }, { "state", toString(state) } };
+}
+
+QJsonObject refLost(const RefKey& key, qint64 since)
+{
+    return { { "type", "refLost" }, { "key", keyToJson(key) }, { "since", since } };
+}
+
+QJsonObject reconciled(const QString& clientId, qint64 time)
+{
+    return { { "type", "reconciled" }, { "client", clientId }, { "time", time } };
+}
+
+QJsonObject orphan(const QString& hash, std::optional<qint64> since)
+{
+    QJsonObject json{ { "type", "orphan" }, { "hash", hash } };
+    if (since) {
+        json["since"] = *since;
+    }
+    return json;
+}
+
+QJsonObject destroyAborted(const QString& hash)
+{
+    return { { "type", "destroyAborted" }, { "hash", hash } };
 }
 
 QJsonObject destroying(const QString& hash, int generation)
@@ -298,6 +344,7 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
             entry->hadSymbolicLinks = true;
         }
         entry->orphanSince.reset();
+        entry->unrecorded = false;
         // a single assignment, so replacing a ref with one to the same object never loses it
         m_refs[transaction.key] = { transaction.newHash, kind, entry->current->id, RefState::Live };
     }
@@ -316,7 +363,64 @@ Result<> RefTable::apply(const QJsonObject& record)
         return {};
     }
     if (type == "owner") {
-        m_owners[record["owner"].toString()] = record["root"].toString();
+        const auto owner = record["owner"].toString();
+        m_owners[owner] = record["root"].toString();
+        if (record.contains("volume")) {
+            m_ownerVolumes[owner] = record["volume"].toString();
+        }
+        return {};
+    }
+    if (type == "removeOwner") {
+        const auto owner = record["owner"].toString();
+        m_owners.remove(owner);
+        m_ownerVolumes.remove(owner);
+        m_refs.removeIf([&owner](const auto& it) { return it.key().owner == owner; });
+        return {};
+    }
+    if (type == "addRef") {
+        const auto key = keyFromJson(record["key"].toObject());
+        auto entry = m_entries.find(record["hash"].toString());
+        if (entry == m_entries.end() || m_refs.contains(key)) {
+            return std::unexpected(QString("Invalid ref addition"));
+        }
+        Ref ref;
+        ref.hash = entry->hash;
+        TRY_INTO(ref.kind, linkKindFromString(record["kind"].toString()))
+        ref.generation = record["generation"].toInt();
+        if (ref.kind == LinkKind::Symbolic) {
+            entry->hadSymbolicLinks = true;
+        }
+        entry->orphanSince.reset();
+        entry->unrecorded = false;
+        m_refs[key] = ref;
+        return {};
+    }
+    if (type == "refLost") {
+        auto it = m_refs.find(keyFromJson(record["key"].toObject()));
+        if (it == m_refs.end()) {
+            return std::unexpected(QString("Loss of an unknown ref"));
+        }
+        it->lostSince = record["since"].toInteger();
+        return {};
+    }
+    if (type == "reconciled") {
+        m_clients[record["client"].toString()].lastCompleteReconcile = record["time"].toInteger();
+        return {};
+    }
+    if (type == "orphan") {
+        auto entry = m_entries.find(record["hash"].toString());
+        if (entry == m_entries.end()) {
+            return std::unexpected(QString("Orphan record for an unknown file"));
+        }
+        if (record.contains("since")) {
+            entry->orphanSince = record["since"].toInteger();
+        } else {
+            entry->orphanSince.reset();
+        }
+        return {};
+    }
+    if (type == "destroyAborted") {
+        m_destroying.remove(record["hash"].toString());
         return {};
     }
     if (type == "publish") {
@@ -326,6 +430,7 @@ Result<> RefTable::apply(const QJsonObject& record)
         entry.size = record["size"].toInteger();
         entry.current = generationFromJson(record["generation"].toObject());
         entry.nextGeneration = std::max(entry.nextGeneration, entry.current->id + 1);
+        entry.unrecorded = record["unrecorded"].toBool();
         return {};
     }
     if (type == "updateIdentity") {
@@ -381,6 +486,9 @@ Result<> RefTable::apply(const QJsonObject& record)
             return std::unexpected(QString("State change for an unknown ref"));
         }
         TRY_INTO(it->state, refStateFromString(record["state"].toString()))
+        if (it->state == RefState::Live) {
+            it->lostSince.reset();
+        }
         return {};
     }
     if (type == "destroying") {
@@ -428,21 +536,32 @@ QJsonObject RefTable::snapshot() const
         if (entry.hadSymbolicLinks) {
             json["hadSymbolicLinks"] = true;
         }
+        if (entry.unrecorded) {
+            json["unrecorded"] = true;
+        }
         entries.append(json);
     }
 
     QJsonArray refs;
     for (auto it = m_refs.begin(); it != m_refs.end(); ++it) {
-        refs.append(QJsonObject{ { "key", keyToJson(it.key()) },
-                                 { "hash", it->hash },
-                                 { "kind", toString(it->kind) },
-                                 { "generation", it->generation },
-                                 { "state", toString(it->state) } });
+        QJsonObject ref{ { "key", keyToJson(it.key()) },
+                         { "hash", it->hash },
+                         { "kind", toString(it->kind) },
+                         { "generation", it->generation },
+                         { "state", toString(it->state) } };
+        if (it->lostSince) {
+            ref["lostSince"] = *it->lostSince;
+        }
+        refs.append(ref);
     }
 
     QJsonObject owners;
     for (auto it = m_owners.begin(); it != m_owners.end(); ++it) {
         owners[it.key()] = *it;
+    }
+    QJsonObject ownerVolumes;
+    for (auto it = m_ownerVolumes.begin(); it != m_ownerVolumes.end(); ++it) {
+        ownerVolumes[it.key()] = *it;
     }
 
     QJsonObject clients;
@@ -464,13 +583,10 @@ QJsonObject RefTable::snapshot() const
         destroying[it.key()] = *it;
     }
 
-    return { { "entries", entries },
-             { "refs", refs },
-             { "owners", owners },
-             { "clients", clients },
-             { "transactions", transactions },
-             { "destroying", destroying },
-             { "nextTransactionId", m_nextTransactionId } };
+    return { { "entries", entries },       { "refs", refs },
+             { "owners", owners },         { "ownerVolumes", ownerVolumes },
+             { "clients", clients },       { "transactions", transactions },
+             { "destroying", destroying }, { "nextTransactionId", m_nextTransactionId } };
 }
 
 Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
@@ -492,6 +608,7 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
             entry.orphanSince = json["orphanSince"].toInteger();
         }
         entry.hadSymbolicLinks = json["hadSymbolicLinks"].toBool();
+        entry.unrecorded = json["unrecorded"].toBool();
         table.m_entries[entry.hash] = entry;
     }
     for (const auto& value : snapshot["refs"].toArray()) {
@@ -501,11 +618,18 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
         TRY_INTO(ref.kind, linkKindFromString(json["kind"].toString()))
         ref.generation = json["generation"].toInt();
         TRY_INTO(ref.state, refStateFromString(json["state"].toString()))
+        if (json.contains("lostSince")) {
+            ref.lostSince = json["lostSince"].toInteger();
+        }
         table.m_refs[keyFromJson(json["key"].toObject())] = ref;
     }
     const auto owners = snapshot["owners"].toObject();
     for (auto it = owners.begin(); it != owners.end(); ++it) {
         table.m_owners[it.key()] = it->toString();
+    }
+    const auto ownerVolumes = snapshot["ownerVolumes"].toObject();
+    for (auto it = ownerVolumes.begin(); it != ownerVolumes.end(); ++it) {
+        table.m_ownerVolumes[it.key()] = it->toString();
     }
     const auto clients = snapshot["clients"].toObject();
     for (auto it = clients.begin(); it != clients.end(); ++it) {

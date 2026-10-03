@@ -52,6 +52,8 @@ struct StoreEntry {
     // set while no instance uses the file, see the orphan rules
     std::optional<qint64> orphanSince;
     bool hadSymbolicLinks = false;
+    // found in the store without a record, so links to it may exist that no scan has seen yet
+    bool unrecorded = false;
 
     // the current or a retired generation
     const Generation* generation(int id) const;
@@ -68,6 +70,8 @@ struct Ref {
     LinkKind kind = LinkKind::Hard;
     int generation = 0;
     RefState state = RefState::Live;
+    // when a complete reconciliation first found the link definitely gone
+    std::optional<qint64> lostSince;
 
     bool operator==(const Ref&) const = default;
 };
@@ -111,19 +115,30 @@ struct ClientInfo {
 // Builders for the journal records that change the table
 namespace RefRecord {
 QJsonObject client(const QString& clientId, const QString& dataDir, qint64 lastSeen);
-QJsonObject owner(const QString& owner, const QString& root);
-QJsonObject publish(const QString& hash, qint64 size, const Generation& generation);
+// volume identifies the volume of the root, to tell a deleted root from one on a drive that isn't connected
+QJsonObject owner(const QString& owner, const QString& root, const QString& volume = {});
+QJsonObject removeOwner(const QString& owner);
+// unrecorded: the file was found in the store without a record
+QJsonObject publish(const QString& hash, qint64 size, const Generation& generation, bool unrecorded = false);
 QJsonObject updateIdentity(const QString& hash, int generation, const StoredIdentity& identity);
 QJsonObject begin(const Transaction& transaction);
 QJsonObject prepared(qint64 transactionId, PlacementKind kind, const QString& expected);
 QJsonObject commit(qint64 transactionId);
 QJsonObject abort(qint64 transactionId);
+QJsonObject addRef(const RefKey& key, const Ref& ref);
 QJsonObject removeRef(const RefKey& key);
 // the link was renamed within its owner, such as when a mod is disabled
 QJsonObject moveRef(const RefKey& key, const QString& relativePath);
 QJsonObject setRefState(const RefKey& key, RefState state);
+QJsonObject refLost(const RefKey& key, qint64 since);
+// a complete reconciliation of a client finished
+QJsonObject reconciled(const QString& clientId, qint64 time);
+// since is when nothing used the file anymore; nullopt when something does again
+QJsonObject orphan(const QString& hash, std::optional<qint64> since);
 QJsonObject destroying(const QString& hash, int generation);
 QJsonObject destroyed(const QString& hash, int generation);
+// the destruction was given up, as the file turned out to be in use
+QJsonObject destroyAborted(const QString& hash);
 }  // namespace RefRecord
 
 // Which stored files exist and which instances link to them. Changed only by applying journal records, so it can always
@@ -138,6 +153,8 @@ class RefTable {
     const QMap<QString, StoreEntry>& entries() const { return m_entries; }
     const QMap<RefKey, Ref>& refs() const { return m_refs; }
     const QMap<QString, QString>& owners() const { return m_owners; }
+    // the volume of an owner's root, as text, if known
+    QString ownerVolume(const QString& owner) const { return m_ownerVolumes.value(owner); }
     const QMap<QString, ClientInfo>& clients() const { return m_clients; }
     const QMap<qint64, Transaction>& transactions() const { return m_transactions; }
     // generations whose destruction started but wasn't confirmed, by hash
@@ -154,6 +171,7 @@ class RefTable {
     QMap<QString, StoreEntry> m_entries;
     QMap<RefKey, Ref> m_refs;
     QMap<QString, QString> m_owners;
+    QMap<QString, QString> m_ownerVolumes;
     QMap<QString, ClientInfo> m_clients;
     QMap<qint64, Transaction> m_transactions;
     QMap<QString, int> m_destroying;

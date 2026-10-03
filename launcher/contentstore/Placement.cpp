@@ -302,7 +302,9 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
                                      {} };
                 item.lease = lease(hash);
                 if (ownerRoots.value(destination.owner) != destination.root) {
-                    records.append(RefRecord::owner(destination.owner, destination.root));
+                    const auto rootId = FS::fileId(destination.root, true);
+                    records.append(
+                        RefRecord::owner(destination.owner, destination.root, rootId ? QString::number(rootId->volume, 16) : QString()));
                     ownerRoots[destination.owner] = destination.root;
                 }
                 records.append(RefRecord::begin(item.transaction));
@@ -580,6 +582,17 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
             return results();
         }
     }
+
+    // the files that were replaced may not be used by anything anymore
+    QSet<QString> replaced;
+    for (const auto& item : items) {
+        if (item.swapped && item.oldRef) {
+            replaced.insert(item.oldRef->hash);
+        }
+    }
+    if (auto released = releaseLocked(replaced); !released) {
+        qWarning() << "Shared store:" << released.error();
+    }
     return results();
 }
 
@@ -621,7 +634,7 @@ Result<ContentStore::UnshareResult> ContentStore::unshare(const RefKey& key)
 
     const Transaction transaction{ m_table.nextTransactionId(),  key, temporaryName(dir), ref->hash,
                                    StoredIdentity::from(before), {},  std::nullopt,       {} };
-    const auto held = lease(ref->hash);
+    auto held = lease(ref->hash);
     TRY(commitLocked({ RefRecord::begin(transaction) }))
     if (interrupted(PlacementStep::Begun)) {
         return std::unexpected(interruptedError());
@@ -694,6 +707,11 @@ Result<ContentStore::UnshareResult> ContentStore::unshare(const RefKey& key)
         }
     }
     TRY(commitLocked(records))
+    // this placement is done with it, so it doesn't keep the file it unlinked
+    held = Lease();
+    if (auto released = releaseLocked({ ref->hash }); !released) {
+        qWarning() << "Shared store:" << released.error();
+    }
     return UnshareResult{ ref->hash, ref->generation, contentHash };
 }
 

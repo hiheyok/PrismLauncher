@@ -321,18 +321,31 @@ bool ResourceFolderModel::setResourceEnabled(const QModelIndexList& indexes, Ena
     return succeeded;
 }
 
-void ResourceFolderModel::renameSharedFile(const QString& from, const QString& to) const
+ContentStore* ResourceFolderModel::sharedStore() const
 {
     // in tests the application macro doesn't work
     auto* application = APPLICATION_DYN;
     auto* store = application ? application->contentStore() : nullptr;
-    if (!store || !store->isWritable() || !m_instance) {
+    return store && store->isWritable() && m_instance ? store : nullptr;
+}
+
+void ResourceFolderModel::renameSharedFile(const QString& from, const QString& to) const
+{
+    auto* store = sharedStore();
+    if (!store) {
         return;
     }
     const QDir gameRoot(m_instance->gameRoot());
     const RefKey key{ store->instanceOwner(m_instance->id()), gameRoot.relativeFilePath(from) };
     if (auto renamed = store->renameRef(key, gameRoot.relativeFilePath(to)); !renamed) {
         qWarning() << "Shared store:" << renamed.error();
+    }
+}
+
+void ResourceFolderModel::noteSharedFileRemoved(const QString& path) const
+{
+    if (auto* store = sharedStore()) {
+        store->noteRemoved({ store->instanceOwner(m_instance->id()), QDir(m_instance->gameRoot()).relativeFilePath(path) });
     }
 }
 
@@ -987,6 +1000,7 @@ void ResourceFolderModel::applyUpdates(QSet<QString>& currentSet, QSet<QString>&
                 }
             }
 
+            noteSharedFileRemoved((*removedIt)->fileinfo().absoluteFilePath());
             beginRemoveRows(QModelIndex(), removedIndex, removedIndex);
             m_resources.erase(removedIt);
             endRemoveRows();

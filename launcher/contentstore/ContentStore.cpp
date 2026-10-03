@@ -190,6 +190,9 @@ ContentStore::State ContentStore::loadTable(State state)
     if (auto committed = commitLocked(Recovery::finishPublications(m_table, objectsDir())); !committed) {
         return setState(State::Disabled, committed.error());
     }
+    if (auto finished = finishDestructionsLocked(); !finished) {
+        return setState(State::Disabled, finished.error());
+    }
     return setState(State::Writable);
 }
 
