@@ -1,4 +1,5 @@
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -207,9 +208,15 @@ class IngestTest : public QObject {
         QVERIFY(writeFile(path("downloads/c.jar"), "same"));
         const auto first = m_store->ingest(path("downloads/a.jar"), ContentStore::IngestMode::Copy);
         QVERIFY(first);
-        // something outside the store changes the stored file's metadata
+        // something outside the store, like a backup tool, changes the stored file's metadata but not its contents.
+        // The time is set explicitly: file system clocks can be too coarse to see two quick changes.
         const auto object = m_store->objectPath(first->hash);
         makeWritable(object);
+        {
+            QFile file(object);
+            QVERIFY(file.open(QIODevice::ReadWrite));
+            QVERIFY(file.setFileTime(QDateTime::currentDateTime().addSecs(-3600), QFileDevice::FileModificationTime));
+        }
         QVERIFY(ObjectFiles::makeReadOnly(object));
 
         const auto second = m_store->ingest(path("downloads/b.jar"), ContentStore::IngestMode::Copy);
