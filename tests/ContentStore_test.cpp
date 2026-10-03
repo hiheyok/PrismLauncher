@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QLockFile>
+#include <QSysInfo>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -216,6 +217,26 @@ class ContentStoreTest : public QObject {
         QCOMPARE(lock.tryAcquire(), StoreLock::Status::HeldByOtherHost);
         QCOMPARE(lock.holder()->hostname, "another-machine");
         QCOMPARE(lock.forceAcquire(), StoreLock::Status::Acquired);
+    }
+
+    void test_hostNameComparison()
+    {
+        const auto host = QSysInfo::machineHostName();
+        QVERIFY(StoreLock::isThisMachine(host));
+        QVERIFY(StoreLock::isThisMachine(host.toUpper()));
+        QVERIFY(StoreLock::isThisMachine(host.toLower()));
+        QVERIFY(StoreLock::isThisMachine(" " + host.section('.', 0, 0) + ".example.org"));
+        QVERIFY(!StoreLock::isThisMachine(host + "-other"));
+    }
+
+    void test_localLockWithDifferentCaseIsNotForeign()
+    {
+        const auto lockPath = leaveLockFile(path("store"));
+        QVERIFY(!lockPath.isEmpty());
+        // this process is running, recorded under the host name in other case
+        QVERIFY(editLockFile(lockPath, { { 2, QSysInfo::machineHostName().toUpper().toUtf8() } }));
+        StoreLock lock(lockPath);
+        QCOMPARE(lock.tryAcquire(), StoreLock::Status::HeldByOtherProcess);
     }
 
     // ContentStore

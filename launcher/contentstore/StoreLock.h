@@ -44,6 +44,9 @@ class StoreLock {
 
     QString path() const { return m_path; }
 
+    // Whether a lock holder's host name refers to this machine
+    static bool isThisMachine(const QString& hostname);
+
    private:
     QString m_path;
     QLockFile m_lock;

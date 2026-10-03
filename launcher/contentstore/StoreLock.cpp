@@ -3,6 +3,20 @@
 #include <QFile>
 #include <QSysInfo>
 
+namespace {
+// Host names can differ in case and in whether the domain is included, for example between the NetBIOS name and
+// the DNS name of the same Windows machine
+QString normalizedHostName(const QString& hostname)
+{
+    return hostname.trimmed().section('.', 0, 0).toLower();
+}
+}  // namespace
+
+bool StoreLock::isThisMachine(const QString& hostname)
+{
+    return normalizedHostName(hostname) == normalizedHostName(QSysInfo::machineHostName());
+}
+
 StoreLock::StoreLock(const QString& path) : m_path(path), m_lock(path)
 {
     // only a lock whose holder died on this machine is stale, never one that is just old
@@ -23,7 +37,7 @@ StoreLock::Status StoreLock::tryAcquire()
         return Status::Error;
     }
     const auto lockHolder = holder();
-    if (lockHolder && !lockHolder->hostname.isEmpty() && lockHolder->hostname != QSysInfo::machineHostName()) {
+    if (lockHolder && !lockHolder->hostname.isEmpty() && !isThisMachine(lockHolder->hostname)) {
         return Status::HeldByOtherHost;
     }
     return Status::HeldByOtherProcess;
