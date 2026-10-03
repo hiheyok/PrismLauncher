@@ -178,6 +178,8 @@ Result<Journal::Contents> Journal::load()
     // appending after a line without its line break would join the two
     m_needsNewSegment = numbers.isEmpty() || contents.hadTornRecord || !lastSegmentHasHeader || !lastSegmentEndsCleanly;
     m_format = contents.format;
+    // whatever a failed write left behind was just read back; anything after it goes into a new segment
+    m_failed = false;
     return contents;
 }
 

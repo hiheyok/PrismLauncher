@@ -529,6 +529,24 @@ class JournalTest : public QObject {
         QCOMPARE(reopened.table().ref({ "client:i", "mods/a.jar" })->hash, g_hashA);
     }
 
+    void test_reopenAfterFailedJournalWrite()
+    {
+        ContentStore store(this->store(), path("data"));
+        QCOMPARE(store.open(), ContentStore::State::Writable);
+        FS::Testing::setFaultHook([](FS::Testing::Operation operation, const QString& path) {
+            return operation == FS::Testing::Operation::FlushFile && path.contains("refs.journal");
+        });
+        QVERIFY(!store.commit({ RefRecord::owner("client:a", instance()) }));
+        FS::Testing::setFaultHook(nullptr);
+        QCOMPARE(store.state(), ContentStore::State::Disabled);
+
+        // opening again reloads the journal and allows changes again
+        QCOMPARE(store.open(), ContentStore::State::Writable);
+        QVERIFY(store.commit({ RefRecord::owner("client:b", path("b")) }));
+        ContentStore reopened(this->store(), path("data2"));
+        QCOMPARE(reopened.open(), ContentStore::State::Busy);
+    }
+
     void test_storeWithNewerJournalIsReadOnly()
     {
         {
