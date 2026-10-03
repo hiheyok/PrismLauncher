@@ -13,7 +13,7 @@ QString path(const QString& gameRoot);
 // The line that allows every link whose target is inside dir
 QString entryFor(const QString& dir);
 
-// Adds the entry for dir to the game folder's list, unless it is already there.
+// Adds the entry for dir to the game folder's list, unless it is already there, and makes the change durable.
 // The list is replaced, never written through, so a list that is itself a link to another instance's list is left alone.
 Result<> allow(const QString& gameRoot, const QString& dir);
 

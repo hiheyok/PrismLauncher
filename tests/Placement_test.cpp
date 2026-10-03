@@ -221,6 +221,47 @@ class PlacementTest : public QObject {
         QVERIFY(allowed.contains(SymlinkAllowList::entryFor(path("store"))));
     }
 
+    void test_allowListIsWrittenBeforeTheSwap()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("symbolic");
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        m_store->setInterruptionForTesting([](Step reached) { return reached == Step::Swapped; });
+        QVERIFY(!m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        reopen();
+
+        // the crash came after the swap, so the link is kept, and Minecraft is allowed to follow it
+        QCOMPARE(m_store->table().ref(destination("resourcepacks/pack.zip").key())->kind, LinkKind::Symbolic);
+        const auto allowed = QString::fromUtf8(readFile(SymlinkAllowList::path(path("a"))));
+        QVERIFY(allowed.contains(SymlinkAllowList::entryFor(path("store"))));
+    }
+
+    void test_symbolicLinkNeedsTheAllowList()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("symbolic");
+        // only the list can't be written
+        FS::Testing::setFaultHook([](FS::Testing::Operation operation, const QString& target) {
+            return operation == FS::Testing::Operation::Replace && QFileInfo(target).fileName() == "allowed_symlinks.txt";
+        });
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        const auto placed = m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options);
+        QVERIFY(!placed);
+        QVERIFY2(placed.error().contains("allowed_symlinks.txt"), qPrintable(placed.error()));
+        // a link Minecraft would refuse is never put in place
+        QVERIFY(!QFileInfo(path("a/resourcepacks/pack.zip")).isSymbolicLink());
+        QVERIFY(!QFileInfo::exists(path("a/resourcepacks/pack.zip")));
+        QVERIFY(m_store->table().refs().isEmpty());
+        QVERIFY(m_store->table().transactions().isEmpty());
+        QVERIFY(leftovers("a/resourcepacks").isEmpty());
+    }
+
     void test_symbolicLinkMode()
     {
         if (!m_canCreateSymbolicLinks) {
@@ -430,7 +471,8 @@ class PlacementTest : public QObject {
         const auto before = FS::fileId(path("a/mods/mod.jar"));
         const auto destinationPath = path("a/mods/mod.jar");
         FS::Testing::setFaultHook([&destinationPath](FS::Testing::Operation operation, const QString& target) {
-            return operation == FS::Testing::Operation::Replace && QFileInfo(target) == QFileInfo(destinationPath);
+            return operation == FS::Testing::Operation::Replace &&
+                   QFileInfo(target).absoluteFilePath() == QFileInfo(destinationPath).absoluteFilePath();
         });
 
         QVERIFY(!m_store->placeAt({ destination("mods/mod.jar"), newHash, {} }));

@@ -63,7 +63,7 @@ Result<> allow(const QString& gameRoot, const QString& dir)
     if (auto written = FS::flushFile(temporary).and_then([&] { return FS::replaceFile(temporary, file); }); !written) {
         return discard(written.error());
     }
-    return {};
+    return FS::flushDir(gameRoot);
 }
 
 }  // namespace SymlinkAllowList

@@ -491,6 +491,25 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
 
     // 4. Swap each new file into place, if the destination still holds what was recorded
     records.clear();
+
+    // Minecraft refuses symbolically linked packs unless their target is allowed, so that is durable before any swap
+    QMap<QString, Result<>> allowedRoots;
+    for (auto& item : items) {
+        if (!item.prepared || *item.created != PlacementKind::Symbolic) {
+            continue;
+        }
+        const auto& root = item.placement.destination.root;
+        if (!allowedRoots.contains(root)) {
+            allowedRoots[root] = SymlinkAllowList::allow(root, m_storeDir);
+        }
+        if (const auto& allowed = allowedRoots[root]; !allowed) {
+            item.fail(allowed.error());
+            item.prepared = false;
+            discardFile(item.transaction.temporaryPath);
+            records.append(RefRecord::abort(item.transaction.id));
+        }
+    }
+
     for (auto& item : items) {
         if (!item.prepared) {
             continue;
@@ -559,20 +578,6 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
                 }
             }
             return results();
-        }
-    }
-    locker.unlock();
-
-    // Minecraft refuses symbolically linked packs unless their target is allowed
-    QSet<QString> roots;
-    for (const auto& item : items) {
-        if (item.swapped && !item.error && *item.created == PlacementKind::Symbolic) {
-            roots.insert(item.placement.destination.root);
-        }
-    }
-    for (const auto& root : roots) {
-        if (auto allowed = SymlinkAllowList::allow(root, m_storeDir); !allowed) {
-            qWarning() << "Shared store:" << allowed.error();
         }
     }
     return results();
