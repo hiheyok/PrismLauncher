@@ -227,8 +227,12 @@ class ContentStore {
     QString generationPath(const QString& hash, const Generation& generation) const;
     // Whether path holds the link that ref records
     bool holdsLink(const QString& path, const Ref& ref) const;
-    // Records the identity of the current file of hash again, after the launcher changed its links
-    std::optional<QJsonObject> recaptureIdentity(const QString& hash, int generation) const;
+    // Whether the file of a generation still has the identity recorded for it, so its contents count as checked
+    bool identityMatches(const QString& hash, int generation) const;
+    // Records the new change time of a generation's file after the launcher added or removed one of its links. Only if
+    // its identity matched the record before (matchedBefore) and nothing but the change time differs now, so a file
+    // changed by something else stays marked for hashing.
+    std::optional<QJsonObject> recaptureIdentity(const QString& hash, int generation, bool matchedBefore) const;
     bool interrupted(PlacementStep step) const { return m_interruption && m_interruption(step); }
 
     QString m_storeDir;

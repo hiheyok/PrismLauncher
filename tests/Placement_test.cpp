@@ -702,6 +702,96 @@ class PlacementTest : public QObject {
         QVERIFY(!m_store->table().ref(destination("resourcepacks/pack.zip").key()));
     }
 
+    void test_damagedFileIsNotTrustedAfterUnsharing()
+    {
+        const auto hash = store("original");
+        QVERIFY(m_store->placeAt({ destination("mods/mod.jar"), hash, {} }));
+        QVERIFY(m_store->placeAt({ destination("mods/mod.jar", "b"), hash, {} }));
+        // edited in place through a link, which damages the stored file
+        makeWritable(path("a/mods/mod.jar"));
+        QVERIFY(writeFile(path("a/mods/mod.jar"), "damaged"));
+        QVERIFY(m_store->unshare(destination("mods/mod.jar").key()));
+        // removing the link must not make the damaged file look checked
+        QVERIFY(!identityIsCurrent(hash));
+
+        QVERIFY(writeFile(path("downloads/again.jar"), "original"));
+        const auto again = m_store->ingest(path("downloads/again.jar"), ContentStore::IngestMode::Copy);
+        QVERIFY(!again || again->rehashedObject);
+        if (again) {
+            QCOMPARE(readFile(m_store->objectPath(again->hash)), "original");
+        }
+    }
+
+    void test_damagedFileIsNotTrustedAfterPlacing()
+    {
+        const auto hash = store("original");
+        QVERIFY(m_store->placeAt({ destination("mods/mod.jar"), hash, {} }));
+        makeWritable(path("a/mods/mod.jar"));
+        QVERIFY(writeFile(path("a/mods/mod.jar"), "damaged"));
+        // linking it again must not record the damaged file as checked
+        QVERIFY(m_store->placeAt({ destination("mods/mod.jar", "b"), hash, {} }));
+        QVERIFY(!identityIsCurrent(hash));
+    }
+
+    void test_unshareOfASymbolicLinkWhoseTargetChanges()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("linked pack");
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        QVERIFY(m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        const auto object = m_store->objectPath(hash);
+        // the stored file is edited after it was copied
+        bool edited = false;
+        FS::Testing::setFaultHook([&object, &edited](FS::Testing::Operation operation, const QString& target) {
+            if (!edited && operation == FS::Testing::Operation::FlushFile && QFileInfo(target).fileName().startsWith(".prism-new-")) {
+                edited = true;
+                makeWritable(object);
+                writeFile(object, "edited after the copy");
+            }
+            return false;
+        });
+
+        QVERIFY(!m_store->unshare(destination("resourcepacks/pack.zip").key()));
+        QVERIFY(edited);
+        QVERIFY(QFileInfo(path("a/resourcepacks/pack.zip")).isSymbolicLink());
+        QVERIFY(m_store->table().ref(destination("resourcepacks/pack.zip").key()));
+        QVERIFY(m_store->table().transactions().isEmpty());
+        QVERIFY(leftovers("a/resourcepacks").isEmpty());
+    }
+
+    void test_batchUpdateOfASharedFile()
+    {
+        const auto oldHash = store("version 1");
+        const auto newHash = store("version 2");
+        QVERIFY(m_store->place({ { destination("mods/mod.jar", "a"), oldHash, {} }, { destination("mods/mod.jar", "b"), oldHash, {} } })
+                    .size() == 2);
+        // updating both in one batch: each swap removes a link to the old file, changing its change time
+        const auto results =
+            m_store->place({ { destination("mods/mod.jar", "a"), newHash, {} }, { destination("mods/mod.jar", "b"), newHash, {} } });
+        for (const auto& result : results) {
+            QVERIFY2(result, result ? "" : qPrintable(result.error()));
+        }
+        QVERIFY(sameFile(path("a/mods/mod.jar"), m_store->objectPath(newHash)));
+        QVERIFY(sameFile(path("b/mods/mod.jar"), m_store->objectPath(newHash)));
+    }
+
+    void test_batchLinksTheFileItReplaces()
+    {
+        const auto oldHash = store("version 1");
+        const auto newHash = store("version 2");
+        QVERIFY(m_store->placeAt({ destination("mods/mod.jar", "a"), oldHash, {} }));
+        // linking the old file elsewhere in the same batch changes the change time of the link being replaced
+        const auto results =
+            m_store->place({ { destination("mods/old.jar", "b"), oldHash, {} }, { destination("mods/mod.jar", "a"), newHash, {} } });
+        for (const auto& result : results) {
+            QVERIFY2(result, result ? "" : qPrintable(result.error()));
+        }
+        QVERIFY(sameFile(path("a/mods/mod.jar"), m_store->objectPath(newHash)));
+    }
+
     void test_unshareReplay_data()
     {
         QTest::addColumn<Step>("step");

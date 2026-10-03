@@ -66,8 +66,8 @@ void discardFile(const QString& path)
     }
 }
 
-// Whether the destination still holds the file found when the placement began. Linking a stored file changes the
-// change time of its other links, so it is only compared when the destination isn't a link to the stored file.
+// Whether the destination still holds the file found when the placement began. Linking or unlinking a stored file
+// changes the change time of all its links, so it is only compared when the destination isn't a stored file.
 bool unchanged(const StoredIdentity& recorded, const FS::FileIdentity& now, bool compareChangeTime)
 {
     const auto current = StoredIdentity::from(now);
@@ -123,8 +123,22 @@ bool ContentStore::holdsLink(const QString& path, const Ref& ref) const
     return id && generation->identity.sameFile(*id);
 }
 
-std::optional<QJsonObject> ContentStore::recaptureIdentity(const QString& hash, int generation) const
+bool ContentStore::identityMatches(const QString& hash, int generation) const
 {
+    const auto entry = m_table.entries().find(hash);
+    const auto* recorded = entry != m_table.entries().end() ? entry->generation(generation) : nullptr;
+    if (!recorded) {
+        return false;
+    }
+    const auto identity = FS::identity(generationPath(hash, *recorded));
+    return identity && StoredIdentity::from(*identity) == recorded->identity;
+}
+
+std::optional<QJsonObject> ContentStore::recaptureIdentity(const QString& hash, int generation, bool matchedBefore) const
+{
+    if (!matchedBefore) {
+        return std::nullopt;
+    }
     const auto entry = m_table.entries().find(hash);
     if (entry == m_table.entries().end()) {
         return std::nullopt;
@@ -139,7 +153,9 @@ std::optional<QJsonObject> ContentStore::recaptureIdentity(const QString& hash, 
         return std::nullopt;
     }
     const auto current = StoredIdentity::from(*identity);
-    if (current == recorded->identity) {
+    // adding or removing a link only changes the change time; anything else means the contents may have changed too
+    if (current == recorded->identity || current.size != recorded->identity.size ||
+        current.modifiedTime != recorded->identity.modifiedTime) {
         return std::nullopt;
     }
     return RefRecord::updateIdentity(hash, generation, current);
@@ -162,8 +178,8 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         // the recorded link that was at the destination
         std::optional<Ref> oldRef;
         bool oldIsRegularFile = false;
-        // the destination already was a hard link to the stored file
-        bool oldIsObject = false;
+        // the destination is a stored file, whose change time the batch's own link changes may change
+        bool oldIsStoredFile = false;
         bool begun = false;
         bool prepared = false;
         bool swapped = false;
@@ -180,6 +196,7 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
 
     const auto mode = options.mode.value_or(m_linkMode);
     std::vector<Item> items(placements.size());
+    QMap<std::pair<QString, int>, bool> matchedBefore;
     const auto results = [&items] {
         QList<Result<PlacementKind>> list;
         for (const auto& item : items) {
@@ -207,6 +224,21 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         QMap<QString, QString> ownerRoots = m_table.owners();
         QList<QJsonObject> records;
         qint64 nextId = m_table.nextTransactionId();
+        QSet<QString> storedFiles;
+        for (const auto& entry : m_table.entries()) {
+            if (entry.current) {
+                storedFiles.insert(entry.current->identity.volume + ':' + entry.current->identity.fileId);
+            }
+            for (const auto& generation : entry.retired) {
+                storedFiles.insert(generation.identity.volume + ':' + generation.identity.fileId);
+            }
+        }
+        // whether each stored file the batch links or unlinks had its recorded identity before any of that
+        const auto noteIdentity = [this, &matchedBefore](const QString& hash, int generation) {
+            if (!matchedBefore.contains({ hash, generation })) {
+                matchedBefore[{ hash, generation }] = identityMatches(hash, generation);
+            }
+        };
 
         for (qsizetype i = 0; i < placements.size(); i++) {
             auto& item = items[static_cast<std::size_t>(i)];
@@ -250,8 +282,12 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
                     }
                     oldIdentity = StoredIdentity::from(identity);
                     item.oldIsRegularFile = !state.isSymbolicLink;
-                    item.oldIsObject = !state.isSymbolicLink && entry->current->identity.sameFile(identity.fileId);
+                    item.oldIsStoredFile = !state.isSymbolicLink && storedFiles.contains(oldIdentity->volume + ':' + oldIdentity->fileId);
+                    if (item.oldRef && item.oldRef->kind == LinkKind::Hard) {
+                        noteIdentity(item.oldRef->hash, item.oldRef->generation);
+                    }
                 }
+                noteIdentity(hash, entry->current->id);
                 if (!QDir().mkpath(item.dir)) {
                     return std::unexpected(QString("Could not create %1").arg(item.dir));
                 }
@@ -471,7 +507,7 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
                     pin = std::move(*pinned);
                 }
                 TRY_INTO(const auto now, FS::identity(item.path))
-                if (!unchanged(*item.transaction.oldIdentity, now, !item.oldIsObject)) {
+                if (!unchanged(*item.transaction.oldIdentity, now, !item.oldIsStoredFile)) {
                     return std::unexpected(QString("%1 changed while it was being replaced").arg(item.path));
                 }
             } else if (inspect(item.path).exists) {
@@ -511,7 +547,7 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         }
     }
     for (const auto& [hash, generation] : recapture) {
-        if (auto record = recaptureIdentity(hash, generation)) {
+        if (auto record = recaptureIdentity(hash, generation, matchedBefore.value({ hash, generation }))) {
             records.append(*record);
         }
     }
@@ -574,6 +610,8 @@ Result<ContentStore::UnshareResult> ContentStore::unshare(const RefKey& key)
     const bool symbolic = ref->kind == LinkKind::Symbolic;
     // the bytes the instance sees, which for a damaged stored file aren't the bytes its hash names
     const auto source = symbolic ? generationPath(ref->hash, *generation) : path;
+    TRY_INTO(const auto sourceBefore, FS::identity(source))
+    const bool matchedBefore = identityMatches(ref->hash, ref->generation);
     const auto dir = QFileInfo(path).absolutePath();
 
     const Transaction transaction{ m_table.nextTransactionId(),  key, temporaryName(dir), ref->hash,
@@ -621,16 +659,14 @@ Result<ContentStore::UnshareResult> ContentStore::unshare(const RefKey& key)
     }
 
     auto swapped = [&]() -> Result<> {
-        std::optional<FS::PinnedFile> pin;
-        if (!symbolic) {
-            auto pinned = FS::pinFile(path);
-            if (!pinned) {
-                return std::unexpected(pinned.error());
-            }
-            pin = std::move(*pinned);
+        // the file that was copied, which for a symbolic link is its target: no writer can open it until the swap
+        auto pin = FS::pinFile(source);
+        if (!pin) {
+            return std::unexpected(pin.error());
         }
         TRY_INTO(const auto now, FS::identity(path))
-        if (now != before) {
+        TRY_INTO(const auto sourceNow, FS::identity(source))
+        if (now != before || sourceNow != sourceBefore) {
             return std::unexpected(QString("%1 changed while it was being copied").arg(path));
         }
         return FS::replaceFile(temporary, path);
@@ -648,7 +684,7 @@ Result<ContentStore::UnshareResult> ContentStore::unshare(const RefKey& key)
     QList<QJsonObject> records{ RefRecord::commit(transaction.id) };
     if (!symbolic) {
         // the stored file lost a link, which changes its change time
-        if (auto record = recaptureIdentity(ref->hash, ref->generation)) {
+        if (auto record = recaptureIdentity(ref->hash, ref->generation, matchedBefore)) {
             records.append(*record);
         }
     }
