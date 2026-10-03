@@ -71,6 +71,14 @@ set(CORE_SOURCES
     FileSystemPrimitives.h
     FileSystemPrimitives.cpp
 
+    # Shared content store
+    contentstore/ContentStore.h
+    contentstore/ContentStore.cpp
+    contentstore/StoreFormat.h
+    contentstore/StoreFormat.cpp
+    contentstore/StoreLock.h
+    contentstore/StoreLock.cpp
+
     Result.h
 
     # RW lock protected map

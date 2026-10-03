@@ -44,6 +44,7 @@
 #include "BuildConfig.h"
 
 #include "DataMigrationTask.h"
+#include "contentstore/ContentStore.h"
 #include "java/JavaInstallList.h"
 #include "net/PasteUpload.h"
 #include "tasks/Task.h"
@@ -713,6 +714,12 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
         m_settings->registerSetting("SkinsDir", "skins");
         m_settings->registerSetting("JavaDir", "java");
 
+        // Shared content store: files kept once and linked into instances. Off by default until it's finished.
+        m_settings->registerSetting("SharedStoreEnabled", false);
+        m_settings->registerSetting("SharedStoreDir", "store");
+        // Auto, HardLinks or Symlinks
+        m_settings->registerSetting("SharedStoreLinkMode", "Auto");
+
 #ifdef Q_OS_MACOS
         // Folder security-scoped bookmarks
         m_settings->registerSetting("InstanceDirBookmark", "");
@@ -721,6 +728,7 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
         m_settings->registerSetting("DownloadsDirBookmark", "");
         m_settings->registerSetting("SkinsDirBookmark", "");
         m_settings->registerSetting("JavaDirBookmark", "");
+        m_settings->registerSetting("SharedStoreDirBookmark", "");
 #endif
 
         // Editors
@@ -977,6 +985,14 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
 
     // Themes
     m_themeManager = std::make_unique<ThemeManager>();
+
+    // Shared content store
+    if (m_settings->get("SharedStoreEnabled").toBool()) {
+        const auto storeDir = QDir(m_dataPath).absoluteFilePath(m_settings->get("SharedStoreDir").toString());
+        m_contentStore = std::make_unique<ContentStore>(storeDir, m_dataPath);
+        m_contentStore->open();
+        qInfo() << "<> Shared store" << storeDir << "opened with state" << static_cast<int>(m_contentStore->state());
+    }
 
 #ifdef Q_OS_MACOS
     // for macOS: getting directory settings will generate URL security-scoped bookmarks if needed and not present
