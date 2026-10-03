@@ -37,10 +37,24 @@
 #include <expected>
 
 #include "FileSystem.h"
+#include "FileSystemPrimitives.h"
 
 #include "net/Logging.h"
 
 namespace Net {
+
+namespace {
+// QSaveFile writes through a symbolic link at the target and refuses read-only targets,
+// so downloads over them, and over files with other hard links, are written next to them and swapped in
+bool needsSwap(const QString& path)
+{
+    const QFileInfo info(path);
+    if (info.isSymLink()) {
+        return true;
+    }
+    return info.exists() && (!info.isWritable() || FS::hardLinkCount(path) > 1);
+}
+}  // namespace
 
 auto FileSink::init(QNetworkRequest& request) -> InitResult
 {
@@ -56,7 +70,13 @@ auto FileSink::init(QNetworkRequest& request) -> InitResult
     }
 
     m_wroteAnyData = false;
-    m_outputFile.reset(new PSaveFile(m_filename));
+    m_swapPath.clear();
+    m_swapGuard.reset();
+    if (needsSwap(m_filename)) {
+        m_swapPath = m_filename + ".prism-dl";
+        m_swapGuard.reset(new PSaveFile(m_filename));
+    }
+    m_outputFile.reset(new PSaveFile(m_swapPath.isEmpty() ? m_filename : m_swapPath));
     if (!m_outputFile->open(QIODevice::WriteOnly)) {
         const auto error = QString("Could not open %1 for writing: %2").arg(m_filename).arg(m_outputFile->errorString());
         qCCritical(taskNetLogC) << error;
@@ -124,10 +144,18 @@ auto FileSink::finalize(QNetworkReply& reply) -> Result<>
             m_outputFile->cancelWriting();
             return std::unexpected(error);
         }
+        if (!m_swapPath.isEmpty()) {
+            if (auto swapped = FS::replaceFile(m_swapPath, m_filename); !swapped) {
+                qCCritical(taskNetLogC) << swapped.error();
+                QFile::remove(m_swapPath);
+                return std::unexpected(swapped.error());
+            }
+        }
     }
 
     // then get rid of the save file
     m_outputFile.reset();
+    m_swapGuard.reset();
 
     return finalizeCache(reply);
 }

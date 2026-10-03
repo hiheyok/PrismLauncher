@@ -1282,24 +1282,50 @@ QString createShortcut(QString destination, const QString& target, const QString
 
 bool overrideFolder(const QString& overwrittenPath, const QString& overridePath)
 {
-    using copy_opts = fs::copy_options;
-
     if (!FS::ensureFolderPathExists(overwrittenPath)) {
         return false;
     }
 
-    std::error_code err;
-    fs::copy_options opt = copy_opts::recursive | copy_opts::overwrite_existing;
-
-    // FIXME: hello traveller! Apparently std::copy does NOT overwrite existing files on GNU libstdc++ on Windows?
-    fs::copy(StringUtils::toStdString(overridePath), StringUtils::toStdString(overwrittenPath), opt, err);
-
-    if (err) {
+    const auto fail = [&](const QString& reason) {
         qCritical() << QString("Failed to apply override from %1 to %2").arg(overridePath, overwrittenPath);
-        qCritical() << "Reason:" << QString::fromStdString(err.message());
+        qCritical() << "Reason:" << reason;
+        return false;
+    };
+
+    std::error_code err;
+    const fs::path source = StringUtils::toStdString(overridePath);
+    // follows symbolic links in the override like the previous recursive std::filesystem::copy did
+    const auto options = fs::directory_options::follow_directory_symlink;
+    for (auto it = fs::recursive_directory_iterator(source, options, err); !err && it != fs::end(it); it.increment(err)) {
+        const auto relative = it->path().lexically_relative(source);
+        const auto target = PathCombine(overwrittenPath, StringUtils::fromStdString(relative.native()));
+
+        if (it->is_directory(err)) {
+            if (!FS::ensureFolderPathExists(target)) {
+                return fail("Could not create " + target);
+            }
+            continue;
+        }
+
+        // Copy next to the target and swap it in, so a file that is hard linked or a symbolic link elsewhere is
+        // replaced instead of written through, and a failed copy leaves the target untouched
+        const auto temporary = target + ".prism-new";
+        QFile::remove(temporary);  // left over from an interrupted override
+        fs::copy_file(it->path(), StringUtils::toStdString(temporary), fs::copy_options::overwrite_existing, err);
+        if (err) {
+            QFile::remove(temporary);
+            return fail(QString::fromStdString(err.message()));
+        }
+        if (auto replaced = replaceFile(temporary, target); !replaced) {
+            QFile::remove(temporary);
+            return fail(replaced.error());
+        }
     }
 
-    return err.value() == 0;
+    if (err) {
+        return fail(QString::fromStdString(err.message()));
+    }
+    return true;
 }
 
 QString getFilesystemTypeName(FilesystemType type)

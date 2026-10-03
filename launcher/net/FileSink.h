@@ -62,5 +62,11 @@ class FileSink : public Sink {
     QString m_filename;
     bool m_wroteAnyData = false;
     std::unique_ptr<PSaveFile> m_outputFile;
+
+   private:
+    // set when the download is written next to m_filename and swapped in after it completes
+    QString m_swapPath;
+    // keeps folder scans from picking up the swap file, as PSaveFile does for its own temporary files
+    std::unique_ptr<PSaveFile> m_swapGuard;
 };
 }  // namespace Net
