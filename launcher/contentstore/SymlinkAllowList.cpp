@@ -37,7 +37,8 @@ Result<> allow(const QString& gameRoot, const QString& dir)
         contents = existing.readAll();
         for (const auto& line : QString::fromUtf8(contents).split('\n')) {
             if (line.trimmed() == entry) {
-                return {};
+                // flushed again, as an earlier attempt may have written it without making it durable
+                return FS::flushDir(gameRoot);
             }
         }
         if (!contents.isEmpty() && !contents.endsWith('\n')) {

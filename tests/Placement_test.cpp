@@ -262,6 +262,31 @@ class PlacementTest : public QObject {
         QVERIFY(leftovers("a/resourcepacks").isEmpty());
     }
 
+    void test_retryFlushesTheAllowList()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("symbolic");
+        const auto gameRoot = QFileInfo(path("a")).absoluteFilePath();
+        // the list is replaced, but the game folder can't be flushed, so the entry may not survive a power loss
+        FS::Testing::setFaultHook([&gameRoot](FS::Testing::Operation operation, const QString& target) {
+            return operation == FS::Testing::Operation::FlushDir && QFileInfo(target).absoluteFilePath() == gameRoot;
+        });
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        QVERIFY(!m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        QVERIFY(QString::fromUtf8(readFile(SymlinkAllowList::path(path("a")))).contains(SymlinkAllowList::entryFor(path("store"))));
+
+        // the entry is there now, but it still isn't durable
+        QVERIFY(!m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        QVERIFY(!QFileInfo(path("a/resourcepacks/pack.zip")).isSymbolicLink());
+
+        FS::Testing::setFaultHook(nullptr);
+        QVERIFY(m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        QVERIFY(QFileInfo(path("a/resourcepacks/pack.zip")).isSymbolicLink());
+    }
+
     void test_symbolicLinkMode()
     {
         if (!m_canCreateSymbolicLinks) {
