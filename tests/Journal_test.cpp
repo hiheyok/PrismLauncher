@@ -1,5 +1,6 @@
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -488,12 +489,14 @@ class JournalTest : public QObject {
 
     void test_storeReplaysJournalOnOpen()
     {
-        QVERIFY(writeFile(path("files/a"), "object a"));
         {
             ContentStore store(this->store(), path("data"));
             QCOMPARE(store.open(), ContentStore::State::Writable);
-            QVERIFY(
-                store.commit({ RefRecord::owner("client:i", instance()), RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))) }));
+            // a stored file must exist at its object path, or opening the store removes its record
+            const auto object = store.objectPath(g_hashA);
+            QVERIFY(QDir().mkpath(QFileInfo(object).absolutePath()));
+            QVERIFY(writeFile(object, "object a"));
+            QVERIFY(store.commit({ RefRecord::owner("client:i", instance()), RefRecord::publish(g_hashA, 8, generationFor(object)) }));
         }
         {
             ContentStore reopened(store(), path("data"));
