@@ -71,6 +71,7 @@ class BaseDetachedToolFactory;
 class TranslationsModel;
 class ITheme;
 class ThemeManager;
+class ContentStore;
 class IconTheme;
 class BaseInstance;
 class MinecraftInstance;
@@ -124,6 +125,9 @@ class Application : public QApplication {
     static QIcon logo();
 
     ThemeManager* themeManager() { return m_themeManager.get(); }
+
+    // The shared content store, or nullptr if sharing is disabled
+    ContentStore* contentStore() const { return m_contentStore.get(); }
 
     ExternalUpdater* updater() { return m_updater.get(); }
 
@@ -262,6 +266,7 @@ class Application : public QApplication {
     std::unique_ptr<GenericPageProvider> m_globalSettingsProvider;
     QSet<QString> m_features;
     std::unique_ptr<ThemeManager> m_themeManager;
+    std::unique_ptr<ContentStore> m_contentStore;
 
     QMap<QString, std::shared_ptr<BaseProfilerFactory>> m_profilers;
 

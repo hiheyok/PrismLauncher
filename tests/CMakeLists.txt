@@ -9,6 +9,9 @@ ecm_add_test(FileSystemPrimitives_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_
 ecm_add_test(SafeOverwrite_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME SafeOverwrite)
 
+ecm_add_test(ContentStore_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+    TEST_NAME ContentStore)
+
 ecm_add_test(GZip_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME GZip)
 
