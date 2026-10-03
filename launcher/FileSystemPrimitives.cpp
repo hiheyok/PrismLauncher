@@ -168,8 +168,9 @@ class ScopedWritable {
 
 qint64 fileTimeToNanoseconds(LARGE_INTEGER time)
 {
-    // 100 nanosecond intervals
-    return time.QuadPart * 100;
+    // FILETIME counts 100 nanosecond intervals since 1601, which overflows in nanoseconds, so count from 1970 like POSIX
+    constexpr qint64 unixEpochInFileTime = 116444736000000000;
+    return (time.QuadPart - unixEpochInFileTime) * 100;
 }
 
 #else
@@ -389,8 +390,11 @@ Result<> deleteTree(const QString& path)
     const auto root = StringUtils::toStdString(path);
     std::error_code error;
     const auto status = fs::symlink_status(root, error);
-    if (error || status.type() == fs::file_type::not_found) {
+    if (status.type() == fs::file_type::not_found) {
         return {};
+    }
+    if (error) {
+        return std::unexpected(QString("Failed to inspect %1: %2").arg(path, QString::fromStdString(error.message())));
     }
     if (status.type() != fs::file_type::directory) {
         return deleteLink(path);

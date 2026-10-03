@@ -1,3 +1,4 @@
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -125,6 +126,16 @@ class FileSystemPrimitivesTest : public QObject {
         QVERIFY(after.changeTime != before->changeTime);
     }
 
+    void test_identityTimesAreSinceUnixEpoch()
+    {
+        QVERIFY(writeFile(path("file"), "data"));
+        const auto identity = FS::identity(path("file")).value();
+        const qint64 now = QDateTime::currentMSecsSinceEpoch() * 1000000;
+        constexpr qint64 hour = 3600LL * 1000000000;
+        QVERIFY2(qAbs(identity.modifiedTime - now) < hour, qPrintable(QString::number(identity.modifiedTime)));
+        QVERIFY2(qAbs(identity.changeTime - now) < hour, qPrintable(QString::number(identity.changeTime)));
+    }
+
     void test_sameVolume()
     {
         QVERIFY(writeFile(path("file"), "data"));
@@ -240,6 +251,25 @@ class FileSystemPrimitivesTest : public QObject {
         QCOMPARE(readFile(path("shared")), "shared");
         QVERIFY(isReadOnly(path("shared")));
         QVERIFY(FS::deleteTree(path("missing")));
+    }
+
+    void test_deleteTreeReportsInaccessiblePath()
+    {
+#if defined(Q_OS_WIN)
+        QSKIP("Directory permissions are tested on POSIX");
+#else
+        QVERIFY(QDir(m_dir.path()).mkpath("locked/tree"));
+        QVERIFY(writeFile(path("locked/tree/file"), "data"));
+        QVERIFY(QFile::setPermissions(path("locked"), QFile::Permissions()));
+        const bool accessible = QFileInfo::exists(path("locked/tree/file"));
+        const auto result = FS::deleteTree(path("locked/tree"));
+        QVERIFY(QFile::setPermissions(path("locked"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        if (accessible) {
+            QSKIP("Permissions aren't enforced for this user");
+        }
+        QVERIFY(!result);
+        QVERIFY(QFileInfo::exists(path("locked/tree/file")));
+#endif
     }
 
     void test_deletePathWithReadOnlyHardLink()
