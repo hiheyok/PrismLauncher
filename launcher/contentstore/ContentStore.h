@@ -324,4 +324,6 @@ class ContentStore {
     std::function<bool(PlacementStep)> m_interruption;
     std::function<qint64()> m_clock;
     std::function<bool(const QString&)> m_unreadable;
+    // the last reconciliation couldn't read every folder, so links nobody recorded may be hidden in them
+    bool m_scanIncomplete = false;
 };

@@ -135,6 +135,8 @@ QJsonObject refLost(const RefKey& key, qint64 since);
 QJsonObject reconciled(const QString& clientId, qint64 time);
 // since is when nothing used the file anymore; nullopt when something does again
 QJsonObject orphan(const QString& hash, std::optional<qint64> since);
+// a scan found a link to the file that isn't recorded yet, so it counts as used until then
+QJsonObject linkSeen(const QString& hash, qint64 time, bool symbolic);
 QJsonObject destroying(const QString& hash, int generation);
 QJsonObject destroyed(const QString& hash, int generation);
 // the destruction was given up, as the file turned out to be in use

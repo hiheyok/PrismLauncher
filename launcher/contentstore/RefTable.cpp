@@ -295,6 +295,11 @@ QJsonObject orphan(const QString& hash, std::optional<qint64> since)
     return json;
 }
 
+QJsonObject linkSeen(const QString& hash, qint64 time, bool symbolic)
+{
+    return { { "type", "linkSeen" }, { "hash", hash }, { "time", time }, { "symbolic", symbolic } };
+}
+
 QJsonObject destroyAborted(const QString& hash)
 {
     return { { "type", "destroyAborted" }, { "hash", hash } };
@@ -417,6 +422,16 @@ Result<> RefTable::apply(const QJsonObject& record)
         } else {
             entry->orphanSince.reset();
         }
+        return {};
+    }
+    if (type == "linkSeen") {
+        auto entry = m_entries.find(record["hash"].toString());
+        if (entry == m_entries.end()) {
+            return std::unexpected(QString("Link seen to an unknown file"));
+        }
+        // destroying it needs scans from after this one, which see the link again while it exists
+        entry->orphanSince = record["time"].toInteger();
+        entry->hadSymbolicLinks = entry->hadSymbolicLinks || record["symbolic"].toBool();
         return {};
     }
     if (type == "destroyAborted") {

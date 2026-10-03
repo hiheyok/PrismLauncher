@@ -523,6 +523,65 @@ class ReconcileTest : public QObject {
         QCOMPARE(*m_store->destroyUnused(), 1);
     }
 
+    void test_replacementSymbolicLinkKeepsItsTarget()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto oldHash = place("version 1", "mods/mod.jar");
+        const auto newHash = store("version 2");
+        // replaced outside the launcher by a link to another stored file, which nothing records
+        QVERIFY(FS::deleteLink(path("a/mods/mod.jar")));
+        QVERIFY(FS::createSymbolicLink(m_store->objectPath(newHash), path("a/mods/mod.jar")));
+
+        auto report = reconcileAt(m_time + 1);
+        QVERIFY(report.complete);
+        QVERIFY(isStored(newHash));
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(isStored(newHash));
+
+        // once the old link is released, the new one is recorded in its place
+        reconcileAt(m_time + 2 * g_day);
+        report = reconcileAt(m_time + 4 * g_day);
+        QVERIFY(isStored(newHash));
+        QVERIFY(!isStored(oldHash));
+        const auto ref = m_store->table().ref(key("mods/mod.jar"));
+        QVERIFY(ref);
+        QCOMPARE(ref->hash, newHash);
+        QCOMPARE(ref->kind, LinkKind::Symbolic);
+        QCOMPARE(readFile(path("a/mods/mod.jar")), "version 2");
+    }
+
+    void test_incompleteScanDefersDestruction()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("pack");
+        place("other", "mods/other.jar", "b");
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        QVERIFY(m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        {
+            // in use during a complete scan, so that scan doesn't destroy it
+            const auto lease = m_store->lease(hash);
+            QVERIFY(m_store->unshare(key("resourcepacks/pack.zip")));
+            QVERIFY(reconcileAt(m_time + 1).complete);
+        }
+        // a link nobody recorded appears in a folder that can't be read
+        QVERIFY(QDir(path("b")).mkpath("resourcepacks"));
+        QVERIFY(FS::createSymbolicLink(m_store->objectPath(hash), path("b/resourcepacks/pack.zip")));
+        const auto unreadable = QFileInfo(path("b")).absoluteFilePath();
+        m_store->setUnreadableForTesting([unreadable](const QString& candidate) { return candidate == unreadable; });
+
+        const auto report = reconcileAt(m_time + 2);
+        QVERIFY(!report.complete);
+        QCOMPARE(report.destroyed, 0);
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(isStored(hash));
+        QCOMPARE(readFile(path("b/resourcepacks/pack.zip")), "pack");
+    }
+
     void test_destructionOrder()
     {
         const auto hash = place("mod", "mods/mod.jar");

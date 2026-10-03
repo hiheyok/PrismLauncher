@@ -250,6 +250,10 @@ bool ContentStore::canDestroy(const StoreEntry& entry, const QSet<QString>& used
             return client.lastCompleteReconcile && *client.lastCompleteReconcile > since;
         });
     };
+    if ((entry.unrecorded || entry.hadSymbolicLinks) && m_scanIncomplete) {
+        // an older complete scan can't vouch for folders the latest one couldn't read
+        return false;
+    }
     if (entry.unrecorded) {
         return entry.orphanSince && now() - *entry.orphanSince >= OrphanAgeSeconds && everyoneScannedSince(*entry.orphanSince);
     }
@@ -508,8 +512,15 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
         }
         std::set<RefKey> claimed;
         for (const auto& [key, link] : found) {
-            if (m_table.ref(key) || !claimed.insert(key).second) {
-                // a recorded path, which verification already judged
+            if (const auto existing = m_table.ref(key)) {
+                // A recorded path, which verification already judged. If it now links to another stored file, that file
+                // is in use, though it can only be recorded once the old link is released.
+                if (existing->hash != link.hash || existing->generation != link.generation || existing->kind != link.kind) {
+                    records.append(RefRecord::linkSeen(link.hash, time, link.kind == LinkKind::Symbolic));
+                }
+                continue;
+            }
+            if (!claimed.insert(key).second) {
                 continue;
             }
             const auto moved = std::ranges::find_if(lost, [&](const RefKey& candidate) {
@@ -572,7 +583,10 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
         }
         TRY(commitLocked(records))
     }
-    TRY_INTO(report.destroyed, destroyUnusedLocked())
+    m_scanIncomplete = !report.complete;
+    if (report.complete) {
+        TRY_INTO(report.destroyed, destroyUnusedLocked())
+    }
 
     // 8. Leftovers of interrupted ingests. Only links or copies, never the only copy of anything.
     std::error_code error;
