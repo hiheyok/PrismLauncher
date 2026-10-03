@@ -177,6 +177,37 @@ class SafeOverwriteTest : public QObject {
         QVERIFY(leftovers(m_dir.path()).isEmpty());
     }
 
+    void test_downloadIgnoresExistingSwapPath()
+    {
+        // the old fixed swap path, pointing at an unrelated file
+        QVERIFY(writeFile(path("unrelated.txt"), "unrelated"));
+        QVERIFY(writeFile(path("shared.jar"), "shared"));
+        QVERIFY(hardLink(path("shared.jar"), path("mod.jar")));
+        if (!symlink(path("unrelated.txt"), path("mod.jar.prism-dl"))) {
+            QSKIP("Can't create symbolic links here");
+        }
+
+        QVERIFY(download(path("mod.jar"), "new"));
+        QVERIFY(!QFileInfo(path("mod.jar")).isSymLink());
+        QCOMPARE(readFile(path("mod.jar")), "new");
+        QCOMPARE(readFile(path("unrelated.txt")), "unrelated");
+        QCOMPARE(readFile(path("shared.jar")), "shared");
+        QVERIFY(QFileInfo(path("mod.jar.prism-dl")).isSymLink());
+        QCOMPARE(leftovers(m_dir.path()), QStringList{ "mod.jar.prism-dl" });
+    }
+
+    void test_reserveTemporarySibling()
+    {
+        QVERIFY(writeFile(path("mod.jar"), "data"));
+        const auto first = FS::reserveTemporarySibling(path("mod.jar"), "prism-dl");
+        const auto second = FS::reserveTemporarySibling(path("mod.jar"), "prism-dl");
+        QVERIFY(first && second);
+        QVERIFY(*first != *second);
+        QVERIFY(first->startsWith(path("mod.jar") + ".prism-dl-"));
+        QVERIFY(QFileInfo(*first).isFile() && !QFileInfo(*first).isSymLink());
+        QCOMPARE(QFileInfo(*first).size(), 0);
+    }
+
     void test_overrideFolder()
     {
         QVERIFY(QDir(m_dir.path()).mkpath("instance/mods"));
@@ -222,6 +253,20 @@ class SafeOverwriteTest : public QObject {
         QVERIFY(!QFileInfo(path("instance/mods/mod.jar")).isSymLink());
         QCOMPARE(readFile(path("instance/mods/mod.jar")), "new");
         QCOMPARE(readFile(path("shared.jar")), "shared");
+    }
+
+    void test_overrideKeepsUnrelatedTemporaryNames()
+    {
+        QVERIFY(QDir(m_dir.path()).mkpath("instance/config"));
+        QVERIFY(QDir(m_dir.path()).mkpath("override/config"));
+        QVERIFY(writeFile(path("instance/config/config.ini"), "old"));
+        QVERIFY(writeFile(path("instance/config/config.ini.prism-new"), "user file"));
+        QVERIFY(writeFile(path("override/config/config.ini"), "new"));
+
+        QVERIFY(FS::overrideFolder(path("instance"), path("override")));
+        QCOMPARE(readFile(path("instance/config/config.ini")), "new");
+        QCOMPARE(readFile(path("instance/config/config.ini.prism-new")), "user file");
+        QCOMPARE(leftovers(path("instance/config")), QStringList{ "config.ini.prism-new" });
     }
 
     void test_failedOverrideKeepsOriginal()

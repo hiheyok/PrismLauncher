@@ -70,10 +70,15 @@ auto FileSink::init(QNetworkRequest& request) -> InitResult
     }
 
     m_wroteAnyData = false;
-    m_swapPath.clear();
-    m_swapGuard.reset();
+    discardSwapFile();
     if (needsSwap(m_filename)) {
-        m_swapPath = m_filename + ".prism-dl";
+        // a new file that nothing else refers to, so QSaveFile can't follow a link there
+        auto swapPath = FS::reserveTemporarySibling(m_filename, "prism-dl");
+        if (!swapPath) {
+            qCCritical(taskNetLogC) << swapPath.error();
+            return std::unexpected(swapPath.error());
+        }
+        m_swapPath = *swapPath;
         m_swapGuard.reset(new PSaveFile(m_filename));
     }
     m_outputFile.reset(new PSaveFile(m_swapPath.isEmpty() ? m_filename : m_swapPath));
@@ -100,6 +105,7 @@ auto FileSink::write(const QByteArray& data) -> Result<>
         qCCritical(taskNetLogC) << error;
         m_outputFile->cancelWriting();
         m_outputFile.reset();
+        discardSwapFile();
         m_wroteAnyData = false;
         return std::unexpected(error);
     }
@@ -112,7 +118,9 @@ void FileSink::abort()
 {
     if (m_outputFile) {
         m_outputFile->cancelWriting();
+        m_outputFile.reset();
     }
+    discardSwapFile();
     failAllValidators();
 }
 
@@ -142,22 +150,40 @@ auto FileSink::finalize(QNetworkReply& reply) -> Result<>
             const auto error = QString("Failed to commit changes to %1: %2").arg(m_filename).arg(m_outputFile->errorString());
             qCCritical(taskNetLogC) << error;
             m_outputFile->cancelWriting();
+            m_outputFile.reset();
+            discardSwapFile();
             return std::unexpected(error);
         }
         if (!m_swapPath.isEmpty()) {
             if (auto swapped = FS::replaceFile(m_swapPath, m_filename); !swapped) {
                 qCCritical(taskNetLogC) << swapped.error();
-                QFile::remove(m_swapPath);
+                m_outputFile.reset();
+                discardSwapFile();
                 return std::unexpected(swapped.error());
             }
+            m_swapPath.clear();
         }
     }
 
     // then get rid of the save file
     m_outputFile.reset();
-    m_swapGuard.reset();
+    discardSwapFile();
 
     return finalizeCache(reply);
+}
+
+FileSink::~FileSink()
+{
+    discardSwapFile();
+}
+
+void FileSink::discardSwapFile()
+{
+    if (!m_swapPath.isEmpty()) {
+        QFile::remove(m_swapPath);
+        m_swapPath.clear();
+    }
+    m_swapGuard.reset();
 }
 
 bool FileSink::hasLocalData()

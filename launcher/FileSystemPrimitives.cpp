@@ -427,6 +427,22 @@ Result<> deleteTree(const QString& path)
     return {};
 }
 
+Result<QString> reserveTemporarySibling(const QString& target, const QString& tag)
+{
+    QString lastError;
+    for (int attempt = 0; attempt < 16; attempt++) {
+        const auto random = QUuid::createUuid().toString(QUuid::Id128).left(12);
+        const auto path = QString("%1.%2-%3").arg(target, tag, random);
+        QFile file(path);
+        // NewOnly fails if anything exists at the path, without following a symbolic link there
+        if (file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+            return path;
+        }
+        lastError = file.errorString();
+    }
+    return std::unexpected(QString("Failed to create a temporary file next to %1: %2").arg(target, lastError));
+}
+
 Result<> flushFile(const QString& path)
 {
     TRY(checkFaultHook(Testing::Operation::FlushFile, path))

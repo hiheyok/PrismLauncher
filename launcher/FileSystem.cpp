@@ -1280,6 +1280,35 @@ QString createShortcut(QString destination, const QString& target, const QString
 #endif
 }
 
+namespace {
+// Copies the contents of source into the existing file at target
+Result<> copyContents(const QString& source, const QString& target)
+{
+    QFile input(source);
+    if (!input.open(QIODevice::ReadOnly)) {
+        return std::unexpected(QString("Failed to open %1: %2").arg(source, input.errorString()));
+    }
+    QFile output(target);
+    if (!output.open(QIODevice::WriteOnly | QIODevice::ExistingOnly | QIODevice::Truncate)) {
+        return std::unexpected(QString("Failed to open %1: %2").arg(target, output.errorString()));
+    }
+    constexpr qint64 chunkSize = 1024 * 1024;
+    while (!input.atEnd()) {
+        const auto data = input.read(chunkSize);
+        if (data.isEmpty() && input.error() != QFileDevice::NoError) {
+            return std::unexpected(QString("Failed to read %1: %2").arg(source, input.errorString()));
+        }
+        if (output.write(data) != data.size()) {
+            return std::unexpected(QString("Failed to write %1: %2").arg(target, output.errorString()));
+        }
+    }
+    if (!output.flush()) {
+        return std::unexpected(QString("Failed to write %1: %2").arg(target, output.errorString()));
+    }
+    return {};
+}
+}  // namespace
+
 bool overrideFolder(const QString& overwrittenPath, const QString& overridePath)
 {
     if (!FS::ensureFolderPathExists(overwrittenPath)) {
@@ -1309,15 +1338,16 @@ bool overrideFolder(const QString& overwrittenPath, const QString& overridePath)
 
         // Copy next to the target and swap it in, so a file that is hard linked or a symbolic link elsewhere is
         // replaced instead of written through, and a failed copy leaves the target untouched
-        const auto temporary = target + ".prism-new";
-        QFile::remove(temporary);  // left over from an interrupted override
-        fs::copy_file(it->path(), StringUtils::toStdString(temporary), fs::copy_options::overwrite_existing, err);
-        if (err) {
-            QFile::remove(temporary);
-            return fail(QString::fromStdString(err.message()));
+        auto temporary = reserveTemporarySibling(target, "prism-new");
+        if (!temporary) {
+            return fail(temporary.error());
         }
-        if (auto replaced = replaceFile(temporary, target); !replaced) {
-            QFile::remove(temporary);
+        if (auto copied = copyContents(StringUtils::fromStdString(it->path().native()), *temporary); !copied) {
+            QFile::remove(*temporary);
+            return fail(copied.error());
+        }
+        if (auto replaced = replaceFile(*temporary, target); !replaced) {
+            QFile::remove(*temporary);
             return fail(replaced.error());
         }
     }
