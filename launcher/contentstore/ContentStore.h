@@ -1,11 +1,16 @@
 #pragma once
 
+#include <QJsonObject>
+#include <QList>
+#include <QMutex>
 #include <QString>
 
 #include <cstdint>
 #include <optional>
 
 #include "Result.h"
+#include "contentstore/Journal.h"
+#include "contentstore/RefTable.h"
 #include "contentstore/StoreFormat.h"
 #include "contentstore/StoreLock.h"
 
@@ -43,6 +48,15 @@ class ContentStore {
     QString clientId() const { return m_clientId; }
     std::optional<StoreLock::Holder> lockHolder() const { return m_lock.holder(); }
 
+    // Which files are stored and which instances link to them. Loaded while the store is open.
+    const RefTable& table() const { return m_table; }
+
+    // Durably journals the records, then applies them to the table. Only while writable.
+    Result<> commit(const QList<QJsonObject>& records);
+
+    // Replaces the journal with a snapshot of the table. Only while writable and no placement is in progress.
+    Result<> compact();
+
     QString storeDir() const { return m_storeDir; }
     QString objectsDir() const;
     QString temporaryDir() const;
@@ -53,12 +67,20 @@ class ContentStore {
 
    private:
     State openWithLock(StoreLock::Status lockStatus);
+    // Loads the table from the journal and, when writable, finishes interrupted placements
+    State loadTable(State state);
+    Result<> commitLocked(const QList<QJsonObject>& records);
     State setState(State state, const QString& message = {});
 
     QString m_storeDir;
     QString m_dataDir;
     QString m_clientId;
     StoreLock m_lock;
+    Journal m_journal;
+    RefTable m_table;
+    StoreFormat m_format;
+    // serializes changes to the journal and table
+    QMutex m_mutex;
     State m_state = State::Closed;
     QString m_statusMessage;
 };

@@ -74,6 +74,12 @@ set(CORE_SOURCES
     # Shared content store
     contentstore/ContentStore.h
     contentstore/ContentStore.cpp
+    contentstore/Journal.h
+    contentstore/Journal.cpp
+    contentstore/Recovery.h
+    contentstore/Recovery.cpp
+    contentstore/RefTable.h
+    contentstore/RefTable.cpp
     contentstore/StoreFormat.h
     contentstore/StoreFormat.cpp
     contentstore/StoreLock.h
