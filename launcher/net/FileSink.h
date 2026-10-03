@@ -44,7 +44,7 @@ namespace Net {
 class FileSink : public Sink {
    public:
     explicit FileSink(QString filename) : m_filename(std::move(filename)) {};
-    ~FileSink() override = default;
+    ~FileSink() override;
 
    public:
     InitResult init(QNetworkRequest& request) override;
@@ -62,5 +62,14 @@ class FileSink : public Sink {
     QString m_filename;
     bool m_wroteAnyData = false;
     std::unique_ptr<PSaveFile> m_outputFile;
+
+   private:
+    // removes the file reserved for the swap, unless it was swapped in
+    void discardSwapFile();
+
+    // set when the download is written next to m_filename and swapped in after it completes
+    QString m_swapPath;
+    // keeps folder scans from picking up the swap file, as PSaveFile does for its own temporary files
+    std::unique_ptr<PSaveFile> m_swapGuard;
 };
 }  // namespace Net

@@ -71,6 +71,12 @@ Result<> deleteLink(const QString& path);
 Result<> deleteTree(const QString& path);
 
 /**
+ * Creates a new empty file next to target, named "<target>.<tag>-<random>", and returns its path.
+ * It is created exclusively, so the path is never an existing file or a symbolic link.
+ */
+Result<QString> reserveTemporarySibling(const QString& target, const QString& tag);
+
+/**
  * Writes the file's data to disk. Must be called before making the file read-only, as Windows needs write access.
  */
 Result<> flushFile(const QString& path);
