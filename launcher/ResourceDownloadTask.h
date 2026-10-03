@@ -43,14 +43,24 @@ class ResourceDownloadTask : public SequentialTask {
     const QString& getName() const { return m_pack->name; }
     ModPlatform::IndexedPack::Ptr getPack() { return m_pack; }
 
+    // The resource this download replaces, when the caller knows it before the task runs.
+    // Indexed resources also report it from their metadata while the task runs.
+    void setOldResource(const QString& name, const QString& filename);
+
    private:
     ModPlatform::IndexedPack::Ptr m_pack;
     ModPlatform::IndexedVersion m_pack_version;
     ResourceFolderModel* m_pack_model;
 
+    QString m_downloadReason;
+    QString m_dependentOn;
+    bool m_downloadPrepared = false;
+
     NetJob::Ptr m_filesNetJob;
     LocalResourceUpdateTask::Ptr m_update_task;
 
+    // Adds the download to the job. Runs as a step after the update task, once the old resource is known.
+    Result<> prepareDownload();
     void downloadProgressChanged(qint64 current, qint64 total);
     void downloadFailed(QString reason);
     void downloadSucceeded();

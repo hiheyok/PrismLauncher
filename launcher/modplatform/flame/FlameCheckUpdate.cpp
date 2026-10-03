@@ -114,6 +114,7 @@ void FlameCheckUpdate::getLatestVersionCallback(Resource* resource, QByteArray* 
         }
 
         auto downloadTask = makeShared<ResourceDownloadTask>(pack, latestVer.value(), m_resourceModel, true, "update");
+        downloadTask->setOldResource(resource->metadata()->name, resource->metadata()->filename);
         m_updates.emplace_back(pack->name, resource->metadata()->hash, oldVersion, latestVer->version, latestVer->versionType,
                                FlameAPI::getModFileChangelog(latestVer->addonId.toInt(), latestVer->fileId.toInt()),
                                ModPlatform::ResourceProvider::FLAME, downloadTask, resource->enabled());
