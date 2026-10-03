@@ -118,7 +118,10 @@ Result<Journal::Contents> Journal::load()
     const auto snapshotSequence = contents.lastSequence;
 
     const auto numbers = segmentNumbers();
+    // whether the last segment has a complete header, so records can be appended to it
+    bool lastSegmentHasHeader = false;
     for (const auto number : numbers) {
+        lastSegmentHasHeader = false;
         QFile file(segmentPath(number));
         if (!file.open(QIODevice::ReadOnly)) {
             return std::unexpected(QString("Failed to open %1: %2").arg(file.fileName(), file.errorString()));
@@ -130,7 +133,7 @@ Result<Journal::Contents> Journal::load()
             lines.removeLast();
         }
         if (lines.isEmpty()) {
-            // created but its header was never written
+            // created, but its header was never written
             continue;
         }
 
@@ -143,6 +146,7 @@ Result<Journal::Contents> Journal::load()
         }
         TRY_INTO(const auto format, formatFrom(header.object()["format"], file.fileName()))
         contents.format = StoreFormat::mostRestrictive(contents.format, format);
+        lastSegmentHasHeader = true;
 
         for (int i = 1; i < lines.size(); i++) {
             const auto parsed = parseLine(lines[i]);
@@ -169,7 +173,7 @@ Result<Journal::Contents> Journal::load()
     m_lastSequence = contents.lastSequence;
     // never append after a torn line: the next record goes into a new segment
     m_segment = numbers.isEmpty() ? 0 : numbers.last();
-    m_needsNewSegment = numbers.isEmpty() || contents.hadTornRecord;
+    m_needsNewSegment = numbers.isEmpty() || contents.hadTornRecord || !lastSegmentHasHeader;
     m_format = contents.format;
     return contents;
 }

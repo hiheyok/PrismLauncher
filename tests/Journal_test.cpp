@@ -55,10 +55,10 @@ QString fileIdOf(const QString& path)
 }
 
 // Applies records to a table, failing the test on the first error
-#define APPLY(table, records)                                \
-    for (const auto& record : QList<QJsonObject>(records)) { \
-        const auto applied = (table).apply(record);          \
-        QVERIFY2(applied, applied ? "" : qPrintable(applied.error()));      \
+#define APPLY(table, records)                                          \
+    for (const auto& record : QList<QJsonObject>(records)) {           \
+        const auto applied = (table).apply(record);                    \
+        QVERIFY2(applied, applied ? "" : qPrintable(applied.error())); \
     }
 }  // namespace
 
@@ -132,6 +132,28 @@ class JournalTest : public QObject {
         QVERIFY(again);
         QCOMPARE(again->records.size(), 2);
         QCOMPARE(again->records[1]["owner"].toString(), "client:c");
+    }
+
+    void test_segmentWithoutHeader()
+    {
+        Journal journal(store());
+        QVERIFY(journal.load());
+        QVERIFY(journal.append({ RefRecord::owner("client:a", instance()) }));
+
+        // a crash after creating the next segment, before or while its header was written
+        for (const QByteArray& header : { QByteArray(), QByteArray("{\"format\":{\"formatVer") }) {
+            const auto segments = QDir(store()).entryList({ "refs.journal.*" }, QDir::Files);
+            const auto segment = QDir(store()).filePath(QString("refs.journal.%1").arg(segments.size() + 1));
+            QVERIFY(writeFile(segment, header));
+
+            Journal reopened(store());
+            QVERIFY(reopened.load());
+            QVERIFY(reopened.append({ RefRecord::owner("client:" + QString::number(header.size()), path("b")) }));
+
+            const auto contents = Journal(store()).load();
+            QVERIFY2(contents, contents ? "" : qPrintable(contents.error()));
+            QCOMPARE(contents->records.last()["owner"].toString(), "client:" + QString::number(header.size()));
+        }
     }
 
     void test_damagedRecordIsAnError()
@@ -249,9 +271,8 @@ class JournalTest : public QObject {
         transaction.id = 1;
         transaction.key = { "client:i", "mods/a.jar" };
         transaction.newHash = g_hashA;
-        APPLY(table,
-              (QList<QJsonObject>{ RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))), RefRecord::begin(transaction),
-                                   RefRecord::prepared(1, PlacementKind::Hard, "id"), RefRecord::commit(1) }));
+        APPLY(table, (QList<QJsonObject>{ RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))), RefRecord::begin(transaction),
+                                          RefRecord::prepared(1, PlacementKind::Hard, "id"), RefRecord::commit(1) }));
         QVERIFY(table.transactions().isEmpty());
         const auto ref = table.ref(transaction.key);
         QVERIFY(ref);
@@ -314,11 +335,16 @@ class JournalTest : public QObject {
         QVERIFY(FS::replaceFile(instance() + "/mods/.a.jar.prism-new", instance() + "/mods/a.jar"));
 
         RefTable table;
-        Transaction transaction{ 1,       { "client:i", "mods/a.jar" }, instance() + "/mods/.a.jar.prism-new", std::nullopt, oldIdentity,
-                                 g_hashA, PlacementKind::Hard,          fileIdOf(path("files/a")) };
+        Transaction transaction{ 1,
+                                 { "client:i", "mods/a.jar" },
+                                 instance() + "/mods/.a.jar.prism-new",
+                                 std::nullopt,
+                                 oldIdentity,
+                                 g_hashA,
+                                 PlacementKind::Hard,
+                                 fileIdOf(path("files/a")) };
         APPLY(table, (QList<QJsonObject>{ RefRecord::owner("client:i", instance()),
-                                          RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))),
-                                          RefRecord::begin(transaction) }));
+                                          RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))), RefRecord::begin(transaction) }));
         // the prepared state is part of the begin record here, as replay would see after PREPARED
         QVERIFY(table.transactions()[1].preparedKind);
 
@@ -345,9 +371,9 @@ class JournalTest : public QObject {
                 transaction.preparedKind = PlacementKind::Hard;
                 transaction.expected = fileIdOf(path("files/a"));
             }
-            APPLY(table, (QList<QJsonObject>{ RefRecord::owner("client:i", instance()),
-                                              RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))),
-                                              RefRecord::begin(transaction) }));
+            APPLY(table,
+                  (QList<QJsonObject>{ RefRecord::owner("client:i", instance()),
+                                       RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))), RefRecord::begin(transaction) }));
 
             const auto records = Recovery::finishTransactions(table);
             QCOMPARE(records.size(), 1);
@@ -389,8 +415,7 @@ class JournalTest : public QObject {
             1, { "client:i", "mods/a.jar" }, {}, std::nullopt, std::nullopt, g_hashA, PlacementKind::Symbolic, path("files/a")
         };
         APPLY(table, (QList<QJsonObject>{ RefRecord::owner("client:i", instance()),
-                                          RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))),
-                                          RefRecord::begin(transaction) }));
+                                          RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))), RefRecord::begin(transaction) }));
         const auto records = Recovery::finishTransactions(table);
         QCOMPARE(records.size(), 1);
         QCOMPARE(records[0]["type"].toString(), "commit");
@@ -415,10 +440,10 @@ class JournalTest : public QObject {
         Transaction transaction{
             2, { "client:i", "mods/a.jar" }, {}, g_hashB, oldIdentity, g_hashA, PlacementKind::Hard, fileIdOf(path("files/a"))
         };
-        APPLY(table, (QList<QJsonObject>{ RefRecord::owner("client:i", instance()),
-                                          RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))),
-                                          RefRecord::publish(g_hashB, 8, generationFor(path("files/b"))), RefRecord::begin(old),
-                                          RefRecord::commit(1), RefRecord::begin(transaction) }));
+        APPLY(table,
+              (QList<QJsonObject>{ RefRecord::owner("client:i", instance()), RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))),
+                                   RefRecord::publish(g_hashB, 8, generationFor(path("files/b"))), RefRecord::begin(old),
+                                   RefRecord::commit(1), RefRecord::begin(transaction) }));
 
         const auto records = Recovery::finishTransactions(table);
         APPLY(table, records);
@@ -436,8 +461,8 @@ class JournalTest : public QObject {
         {
             ContentStore store(this->store(), path("data"));
             QCOMPARE(store.open(), ContentStore::State::Writable);
-            QVERIFY(store.commit(
-                { RefRecord::owner("client:i", instance()), RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))) }));
+            QVERIFY(
+                store.commit({ RefRecord::owner("client:i", instance()), RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))) }));
         }
         {
             ContentStore reopened(store(), path("data"));
@@ -460,18 +485,12 @@ class JournalTest : public QObject {
         {
             ContentStore store(this->store(), path("data"));
             QCOMPARE(store.open(), ContentStore::State::Writable);
-            Transaction transaction{ 1,
-                                     { "client:i", "mods/a.jar" },
-                                     {},
-                                     std::nullopt,
-                                     std::nullopt,
-                                     g_hashA,
-                                     PlacementKind::Hard,
-                                     fileIdOf(path("files/a")) };
+            Transaction transaction{
+                1, { "client:i", "mods/a.jar" }, {}, std::nullopt, std::nullopt, g_hashA, PlacementKind::Hard, fileIdOf(path("files/a"))
+            };
             // the crash came after the swap and before COMMIT
-            QVERIFY(
-                store.commit({ RefRecord::owner("client:i", instance()),
-                               RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))), RefRecord::begin(transaction) }));
+            QVERIFY(store.commit({ RefRecord::owner("client:i", instance()), RefRecord::publish(g_hashA, 8, generationFor(path("files/a"))),
+                                   RefRecord::begin(transaction) }));
         }
         ContentStore reopened(store(), path("data"));
         QCOMPARE(reopened.open(), ContentStore::State::Writable);
