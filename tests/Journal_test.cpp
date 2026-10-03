@@ -156,6 +156,37 @@ class JournalTest : public QObject {
         }
     }
 
+    void test_lineWithoutLineBreak()
+    {
+        // a complete header or record whose line break was never written: valid, but nothing may be appended after it
+        for (bool withRecord : { false, true }) {
+            QVERIFY(FS::deleteContents(store()));
+            Journal journal(store());
+            QVERIFY(journal.load());
+            QVERIFY(journal.append({ RefRecord::owner("client:a", instance()) }));
+            const auto segment = QDir(store()).filePath("refs.journal.1");
+            auto data = readFile(segment);
+            if (!withRecord) {
+                data = data.left(data.indexOf('\n') + 1);
+            }
+            QVERIFY(data.endsWith('\n'));
+            data.chop(1);
+            QFile::remove(segment);
+            QVERIFY(writeFile(segment, data));
+
+            Journal reopened(store());
+            const auto loaded = reopened.load();
+            QVERIFY(loaded);
+            QCOMPARE(loaded->records.size(), withRecord ? 1 : 0);
+            QVERIFY(reopened.append({ RefRecord::owner("client:b", path("b")) }));
+
+            const auto again = Journal(store()).load();
+            QVERIFY2(again, again ? "" : qPrintable(again.error()));
+            QCOMPARE(again->records.size(), withRecord ? 2 : 1);
+            QCOMPARE(again->records.last()["owner"].toString(), "client:b");
+        }
+    }
+
     void test_damagedRecordIsAnError()
     {
         Journal journal(store());

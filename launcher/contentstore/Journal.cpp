@@ -118,8 +118,9 @@ Result<Journal::Contents> Journal::load()
     const auto snapshotSequence = contents.lastSequence;
 
     const auto numbers = segmentNumbers();
-    // whether the last segment has a complete header, so records can be appended to it
+    // whether the last segment has a complete header and ends with a line break, so records can be appended to it
     bool lastSegmentHasHeader = false;
+    bool lastSegmentEndsCleanly = true;
     for (const auto number : numbers) {
         lastSegmentHasHeader = false;
         QFile file(segmentPath(number));
@@ -129,6 +130,7 @@ Result<Journal::Contents> Journal::load()
         auto lines = file.readAll().split('\n');
         // a complete file ends with a line break, leaving an empty last entry; anything else there is a torn line
         const bool endsCleanly = lines.last().isEmpty();
+        lastSegmentEndsCleanly = endsCleanly;
         if (endsCleanly) {
             lines.removeLast();
         }
@@ -173,7 +175,8 @@ Result<Journal::Contents> Journal::load()
     m_lastSequence = contents.lastSequence;
     // never append after a torn line: the next record goes into a new segment
     m_segment = numbers.isEmpty() ? 0 : numbers.last();
-    m_needsNewSegment = numbers.isEmpty() || contents.hadTornRecord || !lastSegmentHasHeader;
+    // appending after a line without its line break would join the two
+    m_needsNewSegment = numbers.isEmpty() || contents.hadTornRecord || !lastSegmentHasHeader || !lastSegmentEndsCleanly;
     m_format = contents.format;
     return contents;
 }
