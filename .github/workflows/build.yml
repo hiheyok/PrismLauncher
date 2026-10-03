@@ -42,14 +42,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Fork CI: ARM Linux and ARM Windows builds are left out to keep the queue short
         include:
           - os: ubuntu-24.04
             artifact-name: Linux
-            cmake-preset: linux
-            qt-version: 6.11.2
-
-          - os: ubuntu-24.04-arm
-            artifact-name: Linux-aarch64
             cmake-preset: linux
             qt-version: 6.11.2
 
@@ -65,12 +61,6 @@ jobs:
             cmake-preset: windows_msvc
             # TODO(@getchoo): This is the default in setup-dependencies/windows. Why isn't it working?!?!
             vcvars-arch: amd64
-            qt-version: 6.11.2
-
-          - os: windows-11-arm
-            artifact-name: Windows-MSVC-arm64
-            cmake-preset: windows_msvc
-            vcvars-arch: arm64
             qt-version: 6.11.2
 
           - os: macos-26
