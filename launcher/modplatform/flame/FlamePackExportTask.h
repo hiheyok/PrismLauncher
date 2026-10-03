@@ -19,9 +19,14 @@
 
 #pragma once
 
+#include <memory>
+
 #include "MMCZip.h"
 #include "minecraft/MinecraftInstance.h"
+#include "minecraft/mod/MetadataHandler.h"
 #include "modplatform/flame/FlameAPI.h"
+#include "modplatform/helpers/ExportHashes.h"
+#include "tasks/ConcurrentTask.h"
 #include "tasks/Task.h"
 
 struct FlamePackExportOptions {
@@ -66,17 +71,30 @@ class FlamePackExportTask : public Task {
         bool enabled;
         bool isMod;
     };
+    struct FileToResolve {
+        HashInfo info;
+        // only set for mods with CurseForge metadata
+        std::shared_ptr<const Metadata::ModStruct> metadata;
+        QString authors;
+    };
 
     FlamePackExportOptions m_options;
     QDir m_gameRoot;
 
     QFileInfoList m_files;
+    QMap<QString, FileToResolve> m_filesToResolve{};
+    QMap<QString, ExportHashes::FileHashes> m_fileHashes{};
     QMap<QString, HashInfo> pendingHashes{};
     QMap<QString, ResolvedFile> resolvedFiles{};
     Task::Ptr task;
 
     void collectFiles();
     void collectHashes();
+    void addHashTasks(ConcurrentTask* hashingTask,
+                      const HashInfo& info,
+                      std::shared_ptr<const Metadata::ModStruct> metadata,
+                      const QString& authors);
+    void resolveFromMetadata();
     void makeApiRequest();
     void getProjectsInfo();
     void buildZip();
