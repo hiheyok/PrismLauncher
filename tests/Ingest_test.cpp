@@ -325,6 +325,30 @@ class IngestTest : public QObject {
         QVERIFY(again && again->reusedObject && !again->rehashedObject);
     }
 
+    void test_publicationRecordedDespiteFailedWrite()
+    {
+        // the publish record reaches the journal, but flushing it fails, so the file is moved back to its source
+        QVERIFY(writeFile(path("downloads/mod.jar"), "recorded anyway"));
+        FS::Testing::setFaultHook([](FS::Testing::Operation operation, const QString& path) {
+            return operation == FS::Testing::Operation::FlushFile && path.contains("refs.journal");
+        });
+        QVERIFY(!m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Move));
+        FS::Testing::setFaultHook(nullptr);
+        QCOMPARE(readFile(path("downloads/mod.jar")), "recorded anyway");
+        // a failed journal write stops changes until the store is opened again
+        QVERIFY(!m_store->isWritable());
+
+        m_store.reset();
+        m_store = std::make_unique<ContentStore>(path("store"), path("data"));
+        QCOMPARE(m_store->open(), ContentStore::State::Writable);
+        // the record without its file was removed when the store was opened
+        QVERIFY(!m_store->table().entries().contains(sha256Of("recorded anyway")));
+
+        const auto retry = m_store->ingest(path("downloads/mod.jar"), ContentStore::IngestMode::Move);
+        QVERIFY2(retry, retry ? "" : qPrintable(retry.error()));
+        QCOMPARE(readFile(m_store->objectPath(retry->hash)), "recorded anyway");
+    }
+
     void test_failedMoveRestoresPermissions()
     {
         QVERIFY(writeFile(path("downloads/mod.jar"), "keep me writable"));

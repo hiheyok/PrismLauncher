@@ -104,7 +104,10 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
         // the file is already a stored file, linked into place earlier
         QMutexLocker locker(&m_mutex);
         for (const auto& entry : m_table.entries()) {
-            if (entry.current && entry.current->identity.sameFile(sourceIdentity.fileId)) {
+            // only while the stored file is still in place, which a failed publication may have undone
+            const auto stored = FS::fileId(objectPath(entry.hash));
+            if (entry.current && entry.current->identity.sameFile(sourceIdentity.fileId) && stored &&
+                entry.current->identity.sameFile(*stored)) {
                 return publishLocked({}, entry.hash, entry.size);
             }
         }
