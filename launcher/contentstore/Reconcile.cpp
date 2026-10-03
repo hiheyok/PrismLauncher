@@ -78,7 +78,9 @@ struct Linked {
 
 qint64 ContentStore::now() const
 {
-    return m_clock ? m_clock() : QDateTime::currentSecsSinceEpoch();
+    // Never earlier than a time already recorded: which scan came after a file became unused is decided by these times,
+    // and a clock set back would put new events before old ones. Waiting periods just last longer meanwhile.
+    return std::max(m_clock ? m_clock() : QDateTime::currentSecsSinceEpoch(), m_table.latestTime());
 }
 
 bool ContentStore::isOwnOwner(const QString& owner) const
@@ -251,7 +253,7 @@ bool ContentStore::canDestroy(const StoreEntry& entry, const QSet<QString>& used
         });
     };
     if ((entry.unrecorded || entry.hadSymbolicLinks) &&
-        std::ranges::any_of(m_table.clients(), [](const ClientInfo& client) { return client.lastReconcileIncomplete(); })) {
+        std::ranges::any_of(m_table.clients(), [](const ClientInfo& client) { return client.latestReconcileIncomplete; })) {
         // an older complete scan can't vouch for folders a launcher's latest scan couldn't read
         return false;
     }

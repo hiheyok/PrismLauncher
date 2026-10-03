@@ -598,6 +598,60 @@ class ReconcileTest : public QObject {
         QVERIFY(isStored(hash));
     }
 
+    void test_incompleteScanAfterTheClockWentBack()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("pack");
+        place("other", "mods/other.jar", "b");
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        QVERIFY(m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        const auto start = m_time;
+        {
+            const auto lease = m_store->lease(hash);
+            QVERIFY(m_store->unshare(key("resourcepacks/pack.zip")));
+            QVERIFY(reconcileAt(start + g_hour).complete);
+        }
+        QVERIFY(QDir(path("b")).mkpath("resourcepacks"));
+        QVERIFY(FS::createSymbolicLink(m_store->objectPath(hash), path("b/resourcepacks/pack.zip")));
+        const auto unreadable = QFileInfo(path("b")).absoluteFilePath();
+        m_store->setUnreadableForTesting([unreadable](const QString& candidate) { return candidate == unreadable; });
+
+        // the clock was set back before the next scan, which is still the latest one
+        QVERIFY(!reconcileAt(start + 1).complete);
+        m_time = start + 2 * g_hour;
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        reopen();
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(m_store->compact());
+        reopen();
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(isStored(hash));
+    }
+
+    void test_fileUnusedAfterTheClockWentBack()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("pack");
+        ContentStore::PlaceOptions options;
+        options.mode = ContentStore::LinkMode::SymbolicLinks;
+        QVERIFY(m_store->placeAt({ destination("resourcepacks/pack.zip"), hash, {} }, options));
+        const auto start = m_time;
+        QVERIFY(reconcileAt(start + g_day).complete);
+
+        // the clock is set back, then the file stops being used: the earlier scan came before that, whatever the clock says
+        m_time = start;
+        QVERIFY(m_store->unshare(key("resourcepacks/pack.zip")));
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        reopen();
+        QCOMPARE(*m_store->destroyUnused(), 0);
+        QVERIFY(isStored(hash));
+    }
+
     void test_incompleteScanOfAnotherLauncherDefersDestruction()
     {
         if (!m_canCreateSymbolicLinks) {

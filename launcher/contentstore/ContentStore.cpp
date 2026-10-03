@@ -181,7 +181,7 @@ ContentStore::State ContentStore::loadTable(State state)
 
     // finish what a crash interrupted, before anything else changes the store
     m_state = State::Writable;
-    QList<QJsonObject> records{ RefRecord::client(m_clientId, m_dataDir, QDateTime::currentSecsSinceEpoch()) };
+    QList<QJsonObject> records{ RefRecord::client(m_clientId, m_dataDir, now()) };
     records.append(Recovery::finishTransactions(m_table));
     if (auto committed = commitLocked(records); !committed) {
         return setState(State::Disabled, committed.error());

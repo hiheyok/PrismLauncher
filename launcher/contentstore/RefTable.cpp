@@ -364,6 +364,11 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
 Result<> RefTable::apply(const QJsonObject& record)
 {
     const auto type = record["type"].toString();
+    for (const auto* field : { "lastSeen", "since", "time" }) {
+        if (record.contains(field)) {
+            m_latestTime = std::max(m_latestTime, record[field].toInteger());
+        }
+    }
 
     if (type == "client") {
         auto& client = m_clients[record["client"].toString()];
@@ -414,10 +419,11 @@ Result<> RefTable::apply(const QJsonObject& record)
     }
     if (type == "reconciled") {
         auto& client = m_clients[record["client"].toString()];
-        if (record["complete"].toBool(true)) {
-            client.lastCompleteReconcile = record["time"].toInteger();
-        } else {
+        client.latestReconcileIncomplete = !record["complete"].toBool(true);
+        if (client.latestReconcileIncomplete) {
             client.lastIncompleteReconcile = record["time"].toInteger();
+        } else {
+            client.lastCompleteReconcile = record["time"].toInteger();
         }
         return {};
     }
@@ -597,6 +603,9 @@ QJsonObject RefTable::snapshot() const
         if (it->lastIncompleteReconcile) {
             client["lastIncompleteReconcile"] = *it->lastIncompleteReconcile;
         }
+        if (it->latestReconcileIncomplete) {
+            client["latestReconcileIncomplete"] = true;
+        }
         clients[it.key()] = client;
     }
 
@@ -610,10 +619,11 @@ QJsonObject RefTable::snapshot() const
         destroying[it.key()] = *it;
     }
 
-    return { { "entries", entries },       { "refs", refs },
-             { "owners", owners },         { "ownerVolumes", ownerVolumes },
-             { "clients", clients },       { "transactions", transactions },
-             { "destroying", destroying }, { "nextTransactionId", m_nextTransactionId } };
+    return { { "entries", entries },        { "refs", refs },
+             { "owners", owners },          { "ownerVolumes", ownerVolumes },
+             { "clients", clients },        { "transactions", transactions },
+             { "destroying", destroying },  { "nextTransactionId", m_nextTransactionId },
+             { "latestTime", m_latestTime } };
 }
 
 Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
@@ -668,6 +678,7 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
         if (json.contains("lastIncompleteReconcile")) {
             client.lastIncompleteReconcile = json["lastIncompleteReconcile"].toInteger();
         }
+        client.latestReconcileIncomplete = json["latestReconcileIncomplete"].toBool();
         table.m_clients[it.key()] = client;
     }
     for (const auto& value : snapshot["transactions"].toArray()) {
@@ -679,5 +690,6 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
         table.m_destroying[it.key()] = it->toInt();
     }
     table.m_nextTransactionId = snapshot["nextTransactionId"].toInteger(1);
+    table.m_latestTime = snapshot["latestTime"].toInteger();
     return table;
 }

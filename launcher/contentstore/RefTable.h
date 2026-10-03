@@ -108,14 +108,11 @@ struct ClientInfo {
     QString dataDir;
     qint64 lastSeen = 0;
     std::optional<qint64> lastCompleteReconcile;
-    // a reconciliation that couldn't read every folder; while it is the latest, links may be hidden in those folders
+    // a reconciliation that couldn't read every folder
     std::optional<qint64> lastIncompleteReconcile;
-
-    // whether the latest reconciliation could read every folder
-    bool lastReconcileIncomplete() const
-    {
-        return lastIncompleteReconcile && (!lastCompleteReconcile || *lastIncompleteReconcile >= *lastCompleteReconcile);
-    }
+    // The latest reconciliation, in journal order, couldn't read every folder, so links may be hidden in them. Kept
+    // apart from the times, which can go backwards when the clock is set back.
+    bool latestReconcileIncomplete = false;
 
     bool operator==(const ClientInfo&) const = default;
 };
@@ -171,6 +168,8 @@ class RefTable {
     const QMap<QString, int>& destroying() const { return m_destroying; }
 
     std::optional<Ref> ref(const RefKey& key) const;
+    // the latest time any record carried, so the store's clock never goes back behind what it recorded
+    qint64 latestTime() const { return m_latestTime; }
     qint64 nextTransactionId() const { return m_nextTransactionId; }
 
     bool operator==(const RefTable&) const = default;
@@ -186,4 +185,5 @@ class RefTable {
     QMap<qint64, Transaction> m_transactions;
     QMap<QString, int> m_destroying;
     qint64 m_nextTransactionId = 1;
+    qint64 m_latestTime = 0;
 };
