@@ -1,5 +1,6 @@
 #include "ContentStore.h"
 
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -10,6 +11,7 @@
 #include <algorithm>
 
 #include "FileSystem.h"
+#include "contentstore/Recovery.h"
 
 namespace {
 constexpr auto g_lockFileName = ".lock";
@@ -24,7 +26,10 @@ bool isEmptyStore(const QString& storeDir)
 }  // namespace
 
 ContentStore::ContentStore(QString storeDir, QString dataDir)
-    : m_storeDir(std::move(storeDir)), m_dataDir(std::move(dataDir)), m_lock(QDir(m_storeDir).filePath(g_lockFileName))
+    : m_storeDir(std::move(storeDir))
+    , m_dataDir(std::move(dataDir))
+    , m_lock(QDir(m_storeDir).filePath(g_lockFileName))
+    , m_journal(m_storeDir)
 {}
 
 QString ContentStore::objectsDir() const
@@ -116,11 +121,12 @@ ContentStore::State ContentStore::openWithLock(StoreLock::Status lockStatus)
         format = std::optional<StoreFormat>(StoreFormat{});
     }
 
-    switch (format->value().accessFor()) {
+    m_format = format->value();
+    switch (m_format.accessFor()) {
         case StoreAccess::Disabled:
             return setState(State::Disabled, "The shared store was written by a newer version of the launcher");
         case StoreAccess::ReadOnly:
-            return setState(State::ReadOnly, "The shared store was changed by a newer version of the launcher");
+            return loadTable(setState(State::ReadOnly, "The shared store was changed by a newer version of the launcher"));
         case StoreAccess::Writable:
             break;
     }
@@ -130,7 +136,95 @@ ContentStore::State ContentStore::openWithLock(StoreLock::Status lockStatus)
             return setState(State::Disabled, QString("Could not create %1").arg(dir));
         }
     }
+    return loadTable(State::Writable);
+}
+
+ContentStore::State ContentStore::loadTable(State state)
+{
+    QMutexLocker locker(&m_mutex);
+
+    // always read from disk: another launcher may have changed the store since it was last loaded here
+    auto contents = m_journal.load();
+    if (!contents) {
+        return setState(State::Disabled, contents.error());
+    }
+    // the most restrictive header wins, so a compacted newer journal still protects its state
+    m_format = StoreFormat::mostRestrictive(m_format, contents->format);
+    QString message = m_statusMessage;
+    switch (m_format.accessFor()) {
+        case StoreAccess::Disabled:
+            return setState(State::Disabled, "The shared store was written by a newer version of the launcher");
+        case StoreAccess::ReadOnly:
+            if (state == State::Writable) {
+                state = State::ReadOnly;
+                message = "The shared store was changed by a newer version of the launcher";
+            }
+            break;
+        case StoreAccess::Writable:
+            break;
+    }
+
+    auto table = RefTable::fromSnapshot(contents->snapshot);
+    if (!table) {
+        return setState(State::Disabled, table.error());
+    }
+    for (const auto& record : contents->records) {
+        if (auto applied = table->apply(record); !applied) {
+            return setState(State::Disabled, QString("Invalid journal record: %1").arg(applied.error()));
+        }
+    }
+    m_table = std::move(*table);
+
+    if (state != State::Writable) {
+        return setState(state, message);
+    }
+
+    // finish what a crash interrupted, before anything else changes the store
+    m_state = State::Writable;
+    QList<QJsonObject> records{ RefRecord::client(m_clientId, m_dataDir, QDateTime::currentSecsSinceEpoch()) };
+    records.append(Recovery::finishTransactions(m_table));
+    if (auto committed = commitLocked(records); !committed) {
+        return setState(State::Disabled, committed.error());
+    }
     return setState(State::Writable);
+}
+
+Result<> ContentStore::commit(const QList<QJsonObject>& records)
+{
+    QMutexLocker locker(&m_mutex);
+    return commitLocked(records);
+}
+
+Result<> ContentStore::commitLocked(const QList<QJsonObject>& records)
+{
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    // write-ahead: the records are durable before the table changes
+    if (auto appended = m_journal.append(records); !appended) {
+        setState(State::Disabled, appended.error());
+        return appended;
+    }
+    for (const auto& record : records) {
+        if (auto applied = m_table.apply(record); !applied) {
+            // the journal and table disagree now, so stop changing the store until it is opened again
+            setState(State::Disabled, QString("Invalid shared store record: %1").arg(applied.error()));
+            return applied;
+        }
+    }
+    return {};
+}
+
+Result<> ContentStore::compact()
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    if (!m_table.transactions().isEmpty()) {
+        return std::unexpected(QString("Placements are in progress"));
+    }
+    return m_journal.compact(m_table.snapshot(), m_format);
 }
 
 ContentStore::State ContentStore::setState(State state, const QString& message)
