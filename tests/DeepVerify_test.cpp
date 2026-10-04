@@ -13,6 +13,7 @@
 #include "contentstore/ContentStore.h"
 #include "contentstore/ObjectFiles.h"
 #include "contentstore/StoreTasks.h"
+#include "contentstore/SymlinkAllowList.h"
 
 namespace {
 bool writeFile(const QString& path, const QByteArray& data)
@@ -527,6 +528,53 @@ class DeepVerifyTest : public QObject {
         QCOMPARE(readFile(path("a/resourcepacks/pack.zip")), "pack");
         QCOMPARE(m_store->table().ref(key("resourcepacks/pack.zip"))->state, RefState::Live);
         QVERIFY(m_store->verify()->replaced.isEmpty());
+    }
+
+    void test_repairAllowsTheNewStoreFolder()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("pack");
+        QVERIFY(place(hash, "resourcepacks/pack.zip", "a", LinkKind::Symbolic));
+        // the list only allows the store's previous folder
+        QVERIFY(FS::deleteLink(path("a/allowed_symlinks.txt")));
+        QVERIFY(writeFile(path("a/allowed_symlinks.txt"), SymlinkAllowList::entryFor(path("old-store")).toUtf8() + '\n'));
+        QVERIFY(FS::deleteLink(path("a/resourcepacks/pack.zip")));
+        QVERIFY(FS::createSymbolicLink(QDir(path("old-store/objects")).absoluteFilePath(hash.left(2) + "/" + hash),
+                                       path("a/resourcepacks/pack.zip")));
+
+        QCOMPARE(m_store->repairSymbolicLinks()->retargeted, 1);
+        const auto allowed = QString::fromUtf8(readFile(SymlinkAllowList::path(path("a"))));
+        QVERIFY(allowed.contains(SymlinkAllowList::entryFor(path("store"))));
+    }
+
+    void test_retiredFileFoundLinkedIsKept()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("original");
+        QVERIFY(place(hash, "resourcepacks/pack.zip", "a", LinkKind::Symbolic));
+        const auto generation = currentGeneration(hash);
+        tamper(hash, "edited");
+        deepVerify();
+        QVERIFY(!store("original").isEmpty());
+        // b's recorded path now links to the damaged copy, though b recorded the intact one
+        QVERIFY(place(hash, "resourcepacks/pack.zip", "b", LinkKind::Hard));
+        QVERIFY(FS::deleteLink(path("b/resourcepacks/pack.zip")));
+        QVERIFY(FS::createSymbolicLink(retiredPath(hash, generation), path("b/resourcepacks/pack.zip")));
+        // a keeps the edited version locally, so no recorded link uses the damaged copy anymore
+        QVERIFY(m_store->unshare(key("resourcepacks/pack.zip")));
+        QVERIFY(QFileInfo::exists(retiredPath(hash, generation)));
+
+        // each complete scan sees b's link, so the damaged copy is never destroyed under it
+        for (int scan = 0; scan < 3; scan++) {
+            m_time += 1;
+            QVERIFY(m_store->reconcile({})->complete);
+            QVERIFY(QFileInfo::exists(retiredPath(hash, generation)));
+        }
+        QCOMPARE(readFile(path("b/resourcepacks/pack.zip")), "edited");
     }
 
     void test_unrelatedLinkIsNotRepaired()

@@ -7,6 +7,7 @@
 #include "FileSystemPrimitives.h"
 #include "contentstore/ObjectFiles.h"
 #include "contentstore/StoreFiles.h"
+#include "contentstore/SymlinkAllowList.h"
 
 namespace {
 using StoreFiles::discardFile;
@@ -50,6 +51,8 @@ bool ContentStore::hasPendingRetargets(const QString& hash) const
 
 Result<> ContentStore::retargetLocked(const RefKey& key, const Ref& ref, int generation, const QString& target)
 {
+    // Minecraft refuses links into a folder its list doesn't allow, such as a store that moved, so that is durable first
+    TRY(SymlinkAllowList::allow(m_table.owners().value(key.owner), m_storeDir))
     const auto path = ownerPath(key);
     const auto dir = QFileInfo(path).absolutePath();
     TRY_INTO(const auto before, FS::identity(path))

@@ -621,7 +621,7 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
                 // A recorded path, which verification already judged. If it now links to another stored file, that file
                 // is in use, though it can only be recorded once the old link is released.
                 if (existing->hash != link.hash || existing->generation != link.generation || existing->kind != link.kind) {
-                    records.append(RefRecord::linkSeen(link.hash, time, link.kind == LinkKind::Symbolic));
+                    records.append(RefRecord::linkSeen(link.hash, link.generation, time, link.kind == LinkKind::Symbolic));
                 }
                 continue;
             }

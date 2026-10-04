@@ -312,9 +312,9 @@ QJsonObject orphan(const QString& hash, std::optional<qint64> since)
     return json;
 }
 
-QJsonObject linkSeen(const QString& hash, qint64 time, bool symbolic)
+QJsonObject linkSeen(const QString& hash, int generation, qint64 time, bool symbolic)
 {
-    return { { "type", "linkSeen" }, { "hash", hash }, { "time", time }, { "symbolic", symbolic } };
+    return { { "type", "linkSeen" }, { "hash", hash }, { "generation", generation }, { "time", time }, { "symbolic", symbolic } };
 }
 
 QJsonObject retire(const QString& hash, int generation, const QString& retiredPath)
@@ -469,7 +469,13 @@ Result<> RefTable::apply(const QJsonObject& record)
             return std::unexpected(QString("Link seen to an unknown file"));
         }
         // destroying it needs scans from after this one, which see the link again while it exists
-        entry->orphanSince = record["time"].toInteger();
+        auto* generation = record.contains("generation") ? findGeneration(*entry, record["generation"].toInt()) : nullptr;
+        if (generation && !generation->retiredPath.isEmpty()) {
+            // a damaged copy kept aside is destroyed by its own time
+            generation->unusedSince = record["time"].toInteger();
+        } else {
+            entry->orphanSince = record["time"].toInteger();
+        }
         entry->hadSymbolicLinks = entry->hadSymbolicLinks || record["symbolic"].toBool();
         return {};
     }
