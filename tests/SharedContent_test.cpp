@@ -217,6 +217,12 @@ class SharedContentTest : public QObject {
         QVERIFY(sameFile(file("a", "mods/common.jar"), m_store->objectPath(sha256Of("common mod"))));
         QCOMPARE(m_store->table().refs().size(), 5);
         QCOMPARE(m_store->table().entries().size(), 3);
+        // no temporary links are left next to the files
+        for (const auto* folder : { "a/mods", "a/resourcepacks", "b/mods", "b/resourcepacks" }) {
+            QVERIFY(QDir(path("instances/") + QString(folder).replace("/", "/minecraft/"))
+                        .entryList({ ".prism-*" }, QDir::AllEntries | QDir::Hidden)
+                        .isEmpty());
+        }
         QCOMPARE(readFile(file("b", "mods/only-b.jar")), "only in b");
         // configuration isn't shared
         QVERIFY(!sameFile(file("a", "config/common.toml"), file("b", "config/common.toml")));

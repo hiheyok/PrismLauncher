@@ -543,6 +543,9 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
             continue;
         }
         item.swapped = true;
+        // Renaming a hard link over another link to the same file does nothing on POSIX, which leaves the temporary
+        // link, such as when a stored file is placed where it already is
+        discardFile(item.transaction.temporaryPath);
         if (interrupted(PlacementStep::Swapped)) {
             return interruptedResults();
         }

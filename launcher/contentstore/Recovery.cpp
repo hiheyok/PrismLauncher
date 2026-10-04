@@ -66,6 +66,12 @@ QList<QJsonObject> finishTransactions(const RefTable& table)
         const auto state = inspect(path);
 
         if (holdsPlacement(transaction, state)) {
+            // a rename onto another link to the same file leaves the temporary link on POSIX
+            if (!transaction.temporaryPath.isEmpty() && QFileInfo::exists(transaction.temporaryPath)) {
+                if (auto deleted = FS::deleteLink(transaction.temporaryPath); !deleted) {
+                    qWarning() << "Shared store:" << deleted.error();
+                }
+            }
             records.append(RefRecord::commit(transaction.id));
             continue;
         }
