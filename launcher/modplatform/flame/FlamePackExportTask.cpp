@@ -92,7 +92,7 @@ void FlamePackExportTask::collectHashes()
     task.reset(hashingTask);
     for (const QFileInfo& file : m_files) {
         // a link whose target is gone has nothing to hash; the archive leaves it out and says so
-        if (file.isSymbolicLink() && !file.exists()) {
+        if (MMCZip::isDanglingLink(file)) {
             continue;
         }
         const QString relative = m_gameRoot.relativeFilePath(file.absoluteFilePath());

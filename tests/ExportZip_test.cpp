@@ -125,6 +125,19 @@ class ExportZipTest : public QObject {
         QFile::remove(path("instance/resourcepacks/gone.zip"));
     }
 
+    void test_danglingLinkFromAFolderListing()
+    {
+        QVERIFY(QDir().mkpath(path("listing")));
+        QVERIFY(writeFile(path("listing/present.zip"), "present"));
+        if (!FS::createSymbolicLink(QFileInfo(path("nowhere/missing.zip")).absoluteFilePath(), path("listing/missing.zip"))) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        // as the exports get their files, from a folder listing, which on Windows may say the link exists
+        for (const auto& file : QDir(path("listing")).entryInfoList(QDir::Files | QDir::System | QDir::NoDotAndDotDot)) {
+            QCOMPARE(MMCZip::isDanglingLink(file), file.fileName() == "missing.zip");
+        }
+    }
+
     void test_collectingFindsLinksToMissingFiles()
     {
         QVERIFY(QDir().mkpath(path("collect/mods")));

@@ -39,6 +39,7 @@
 #include "FileSystem.h"
 #include "archive/ArchiveReader.h"
 #include "archive/ArchiveWriter.h"
+#include "archive/ExportToZipTask.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -326,7 +327,7 @@ bool collectFileListRecursively(const QString& rootDir, const QString& subDir, Q
         listed.insert(e.absoluteFilePath());
     }
     for (const auto& e : directory.entryInfoList(QDir::System)) {
-        if (e.isSymbolicLink() && !e.exists() && !listed.contains(e.absoluteFilePath())) {
+        if (isDanglingLink(e) && !listed.contains(e.absoluteFilePath())) {
             entries.append(e);
         }
     }

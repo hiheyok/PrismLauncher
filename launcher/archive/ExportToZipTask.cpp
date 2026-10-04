@@ -27,7 +27,7 @@ void ExportToZipTask::executeTask()
     // links whose target is gone are left out, and listed, instead of failing the export halfway
     if (m_followSymlinks) {
         for (const auto& file : m_files) {
-            if (file.isSymLink() && !QFileInfo::exists(file.symLinkTarget())) {
+            if (isDanglingLink(file)) {
                 emit logWarning(tr("Left out %1: the file it links to doesn't exist").arg(m_dir.relativeFilePath(file.absoluteFilePath())));
             }
         }
