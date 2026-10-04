@@ -12,6 +12,7 @@
 
 #include "FileSystemPrimitives.h"
 #include "contentstore/ObjectFiles.h"
+#include "contentstore/StoreFiles.h"
 #include "contentstore/SymlinkAllowList.h"
 
 #if defined(Q_OS_WIN)
@@ -21,50 +22,10 @@
 #endif
 
 namespace {
-struct PathState {
-    bool exists = false;
-    bool isSymbolicLink = false;
-    bool isDirectory = false;
-    QString target;
-};
-
-PathState inspect(const QString& path)
-{
-    PathState state;
-    const QFileInfo info(path);
-    state.isSymbolicLink = info.isSymbolicLink();
-    state.exists = info.exists() || state.isSymbolicLink;
-    state.isDirectory = !state.isSymbolicLink && info.isDir();
-    if (state.isSymbolicLink) {
-        state.target = info.symLinkTarget();
-    }
-    return state;
-}
-
-// A name for a new file in dir that is hidden from mod loaders and the resource lists
-QString temporaryName(const QString& dir)
-{
-    return QDir(dir).filePath(".prism-new-" + QUuid::createUuid().toString(QUuid::Id128).left(12));
-}
-
-Result<> createEmptyFile(const QString& path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
-        return std::unexpected(QString("Failed to create %1: %2").arg(path, file.errorString()));
-    }
-    return {};
-}
-
-// Removes a temporary file or link, which may be read-only
-void discardFile(const QString& path)
-{
-    if (QFileInfo::exists(path) || QFileInfo(path).isSymbolicLink()) {
-        if (auto deleted = FS::deleteLink(path); !deleted) {
-            qWarning() << "Shared store:" << deleted.error();
-        }
-    }
-}
+using StoreFiles::createEmptyFile;
+using StoreFiles::discardFile;
+using StoreFiles::inspect;
+using StoreFiles::temporaryName;
 
 // Whether the destination still holds the file found when the placement began. Linking or unlinking a stored file
 // changes the change time of all its links, so it is only compared when the destination isn't a stored file.
@@ -114,7 +75,17 @@ bool ContentStore::holdsLink(const QString& path, const Ref& ref) const
     }
     const auto state = inspect(path);
     if (ref.kind == LinkKind::Symbolic) {
-        return state.isSymbolicLink && ObjectFiles::samePath(state.target, generationPath(ref.hash, *generation));
+        if (!state.isSymbolicLink) {
+            return false;
+        }
+        if (ObjectFiles::samePath(state.target, generationPath(ref.hash, *generation))) {
+            return true;
+        }
+        // A link to a damaged copy that couldn't be pointed at the kept copy yet still points at the canonical path,
+        // which holds the same damaged file until an intact copy is stored, and that waits for the link.
+        const auto canonical = FS::fileId(objectPath(ref.hash));
+        return !generation->retiredPath.isEmpty() && !entry->current && ObjectFiles::samePath(state.target, objectPath(ref.hash)) &&
+               canonical && generation->identity.sameFile(*canonical);
     }
     if (!state.exists || state.isSymbolicLink) {
         return false;

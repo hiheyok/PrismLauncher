@@ -88,13 +88,20 @@ QJsonObject generationToJson(const Generation& generation)
     if (!generation.retiredPath.isEmpty()) {
         json["retiredPath"] = generation.retiredPath;
     }
+    if (generation.unusedSince) {
+        json["unusedSince"] = *generation.unusedSince;
+    }
     return json;
 }
 
 Generation generationFromJson(const QJsonObject& json)
 {
-    return { json["id"].toInt(), StoredIdentity::fromJson(json["identity"].toObject()), json["corrupt"].toBool(),
-             json["retiredPath"].toString() };
+    Generation generation{ json["id"].toInt(), StoredIdentity::fromJson(json["identity"].toObject()), json["corrupt"].toBool(),
+                           json["retiredPath"].toString(), std::nullopt };
+    if (json.contains("unusedSince")) {
+        generation.unusedSince = json["unusedSince"].toInteger();
+    }
+    return generation;
 }
 
 QJsonObject transactionToJson(const Transaction& transaction)
@@ -112,6 +119,9 @@ QJsonObject transactionToJson(const Transaction& transaction)
     if (transaction.preparedKind) {
         json["prepared"] = toString(*transaction.preparedKind);
         json["expected"] = transaction.expected;
+    }
+    if (transaction.generation) {
+        json["generation"] = *transaction.generation;
     }
     return json;
 }
@@ -135,6 +145,9 @@ Result<Transaction> transactionFromJson(const QJsonObject& json)
     if (json.contains("prepared")) {
         TRY_INTO(transaction.preparedKind, placementKindFromString(json["prepared"].toString()))
         transaction.expected = json["expected"].toString();
+    }
+    if (json.contains("generation")) {
+        transaction.generation = json["generation"].toInt();
     }
     return transaction;
 }
@@ -308,9 +321,19 @@ QJsonObject orphan(const QString& hash, std::optional<qint64> since)
     return json;
 }
 
-QJsonObject linkSeen(const QString& hash, qint64 time, bool symbolic)
+QJsonObject linkSeen(const QString& hash, int generation, qint64 time, bool symbolic)
 {
-    return { { "type", "linkSeen" }, { "hash", hash }, { "time", time }, { "symbolic", symbolic } };
+    return { { "type", "linkSeen" }, { "hash", hash }, { "generation", generation }, { "time", time }, { "symbolic", symbolic } };
+}
+
+QJsonObject retire(const QString& hash, int generation, const QString& retiredPath)
+{
+    return { { "type", "retire" }, { "hash", hash }, { "generation", generation }, { "retiredPath", retiredPath } };
+}
+
+QJsonObject generationUnused(const QString& hash, int generation, qint64 time)
+{
+    return { { "type", "generationUnused" }, { "hash", hash }, { "generation", generation }, { "time", time } };
 }
 
 QJsonObject destroyAborted(const QString& hash)
@@ -354,7 +377,8 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
         m_refs.remove(transaction.key);
     } else {
         auto entry = m_entries.find(transaction.newHash);
-        if (entry == m_entries.end() || !entry->current) {
+        const int generation = transaction.generation.value_or(entry != m_entries.end() && entry->current ? entry->current->id : 0);
+        if (entry == m_entries.end() || !findGeneration(*entry, generation)) {
             return std::unexpected(QString("Commit of transaction %1 for unknown object %2").arg(transactionId).arg(transaction.newHash));
         }
         const auto kind = *transaction.preparedKind == PlacementKind::Hard ? LinkKind::Hard : LinkKind::Symbolic;
@@ -363,8 +387,10 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
         }
         entry->orphanSince.reset();
         entry->unrecorded = false;
+        // used again, so it is unused only from when its last link goes again
+        findGeneration(*entry, generation)->unusedSince.reset();
         // a single assignment, so replacing a ref with one to the same object never loses it
-        m_refs[transaction.key] = { transaction.newHash, kind, entry->current->id, RefState::Live };
+        m_refs[transaction.key] = { transaction.newHash, kind, generation, RefState::Live, std::nullopt };
     }
     m_transactions.erase(it);
     return {};
@@ -435,6 +461,10 @@ Result<> RefTable::apply(const QJsonObject& record)
         }
         entry->orphanSince.reset();
         entry->unrecorded = false;
+        // used again, so it is unused only from when its last link goes again
+        if (auto* generation = findGeneration(*entry, ref.generation)) {
+            generation->unusedSince.reset();
+        }
         m_refs[key] = ref;
         return {};
     }
@@ -474,8 +504,38 @@ Result<> RefTable::apply(const QJsonObject& record)
             return std::unexpected(QString("Link seen to an unknown file"));
         }
         // destroying it needs scans from after this one, which see the link again while it exists
-        entry->orphanSince = record["time"].toInteger();
+        auto* generation = record.contains("generation") ? findGeneration(*entry, record["generation"].toInt()) : nullptr;
+        if (generation && !generation->retiredPath.isEmpty()) {
+            // a damaged copy kept aside is destroyed by its own time
+            generation->unusedSince = record["time"].toInteger();
+        } else {
+            entry->orphanSince = record["time"].toInteger();
+        }
         entry->hadSymbolicLinks = entry->hadSymbolicLinks || record["symbolic"].toBool();
+        return {};
+    }
+    if (type == "retire") {
+        auto entry = m_entries.find(record["hash"].toString());
+        if (entry == m_entries.end()) {
+            return std::unexpected(QString("Retirement of an unknown file"));
+        }
+        const int id = record["generation"].toInt();
+        if (entry->current && entry->current->id == id) {
+            auto generation = *entry->current;
+            generation.corrupt = true;
+            generation.retiredPath = record["retiredPath"].toString();
+            entry->retired.append(generation);
+            entry->current.reset();
+        }
+        return {};
+    }
+    if (type == "generationUnused") {
+        auto entry = m_entries.find(record["hash"].toString());
+        Generation* generation = entry == m_entries.end() ? nullptr : findGeneration(*entry, record["generation"].toInt());
+        if (!generation) {
+            return std::unexpected(QString("Unknown generation is unused"));
+        }
+        generation->unusedSince = record["time"].toInteger();
         return {};
     }
     if (type == "destroyAborted") {

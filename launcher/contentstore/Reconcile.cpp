@@ -237,6 +237,78 @@ void ContentStore::noteRemoved(const RefKey& key)
     }
 }
 
+bool ContentStore::everyoneScannedSince(qint64 since) const
+{
+    // symbolic links can't be counted, so only complete scans by every launcher using the store rule them out, and an
+    // older complete scan can't vouch for folders a launcher's latest scan couldn't read
+    return std::ranges::all_of(m_table.clients(), [since](const ClientInfo& client) {
+        return !client.latestReconcileIncomplete && client.lastCompleteReconcile && *client.lastCompleteReconcile > since;
+    });
+}
+
+bool ContentStore::canDestroyGeneration(const StoreEntry& entry, const Generation& generation, const QSet<QString>& changing) const
+{
+    if (m_state != State::Writable || generation.retiredPath.isEmpty() || !generation.unusedSince || changing.contains(entry.hash) ||
+        leaseCount(entry.hash) > 0) {
+        return false;
+    }
+    const bool used =
+        std::ranges::any_of(m_table.refs(), [&](const Ref& ref) { return ref.hash == entry.hash && ref.generation == generation.id; });
+    if (used) {
+        return false;
+    }
+    // the damaged file is also at the canonical path until an intact copy replaces it
+    const auto path = generationPath(entry.hash, generation);
+    const auto id = FS::fileId(path);
+    const auto canonical = FS::fileId(objectPath(entry.hash));
+    const bool alsoCanonical = !entry.current && id && canonical && *id == *canonical;
+    if (FS::hardLinkCount(path) != (alsoCanonical ? 2U : 1U)) {
+        return false;
+    }
+    return !entry.hadSymbolicLinks || everyoneScannedSince(*generation.unusedSince);
+}
+
+Result<bool> ContentStore::destroyGenerationLocked(const StoreEntry& entry, const Generation& generation)
+{
+    const auto path = generationPath(entry.hash, generation);
+    const auto canonicalId = FS::fileId(objectPath(entry.hash));
+    const auto id = FS::fileId(path);
+    const bool alsoCanonical = !entry.current && id && canonicalId && *id == *canonicalId;
+    TRY(commitLocked({ RefRecord::destroying(entry.hash, generation.id) }))
+    // the canonical copy first, so a crash never leaves it behind without a record
+    auto deleted = (alsoCanonical ? FS::deleteLink(objectPath(entry.hash)) : Result<>{}).and_then([&] { return FS::deleteLink(path); });
+    if (!deleted) {
+        qWarning() << "Shared store:" << deleted.error();
+        TRY(commitLocked({ RefRecord::destroyAborted(entry.hash) }))
+        return false;
+    }
+    for (const auto& dir : { QFileInfo(path).absolutePath(), QFileInfo(objectPath(entry.hash)).absolutePath() }) {
+        if (auto flushed = FS::flushDir(dir); !flushed) {
+            qWarning() << "Shared store:" << flushed.error();
+        }
+    }
+    TRY(commitLocked({ RefRecord::destroyed(entry.hash, generation.id) }))
+    return true;
+}
+
+Result<> ContentStore::markUnusedGenerationsLocked(const QSet<QString>& hashes)
+{
+    QList<QJsonObject> records;
+    for (const auto& entry : m_table.entries()) {
+        if (!hashes.isEmpty() && !hashes.contains(entry.hash)) {
+            continue;
+        }
+        for (const auto& generation : entry.retired) {
+            const bool used = std::ranges::any_of(
+                m_table.refs(), [&](const Ref& ref) { return ref.hash == entry.hash && ref.generation == generation.id; });
+            if (!used && !generation.unusedSince) {
+                records.append(RefRecord::generationUnused(entry.hash, generation.id, now()));
+            }
+        }
+    }
+    return commitLocked(records);
+}
+
 bool ContentStore::canDestroy(const StoreEntry& entry, const QSet<QString>& used) const
 {
     if (m_state != State::Writable || !entry.current || used.contains(entry.hash) || leaseCount(entry.hash) > 0) {
@@ -244,17 +316,6 @@ bool ContentStore::canDestroy(const StoreEntry& entry, const QSet<QString>& used
     }
     // links nobody recorded, anywhere, including in the system trash
     if (FS::hardLinkCount(objectPath(entry.hash)) != 1) {
-        return false;
-    }
-    // symbolic links can't be counted, so only complete scans by every launcher using the store rule them out
-    const auto everyoneScannedSince = [this](qint64 since) {
-        return std::ranges::all_of(m_table.clients(), [since](const ClientInfo& client) {
-            return client.lastCompleteReconcile && *client.lastCompleteReconcile > since;
-        });
-    };
-    if ((entry.unrecorded || entry.hadSymbolicLinks) &&
-        std::ranges::any_of(m_table.clients(), [](const ClientInfo& client) { return client.latestReconcileIncomplete; })) {
-        // an older complete scan can't vouch for folders a launcher's latest scan couldn't read
         return false;
     }
     if (entry.unrecorded) {
@@ -290,11 +351,28 @@ Result<int> ContentStore::destroyUnused()
 Result<int> ContentStore::destroyUnusedLocked(const QSet<QString>& hashes)
 {
     const auto used = usedHashes();
+    QSet<QString> changing;
+    for (const auto& transaction : m_table.transactions()) {
+        changing.insert(transaction.newHash);
+        if (transaction.oldHash) {
+            changing.insert(*transaction.oldHash);
+        }
+    }
     int destroyed = 0;
     // a copy, as destroying changes the table
     const auto entries = m_table.entries();
     for (const auto& entry : entries) {
-        if ((!hashes.isEmpty() && !hashes.contains(entry.hash)) || !canDestroy(entry, used)) {
+        if (!hashes.isEmpty() && !hashes.contains(entry.hash)) {
+            continue;
+        }
+        // damaged copies that no link uses anymore
+        for (const auto& generation : entry.retired) {
+            if (canDestroyGeneration(entry, generation, changing)) {
+                TRY_INTO(const bool removed, destroyGenerationLocked(entry, generation))
+                destroyed += removed ? 1 : 0;
+            }
+        }
+        if (!canDestroy(entry, used)) {
             continue;
         }
         const int generation = entry.current->id;
@@ -329,6 +407,7 @@ Result<> ContentStore::releaseLocked(const QSet<QString>& hashes)
         }
     }
     TRY(commitLocked(records))
+    TRY(markUnusedGenerationsLocked(hashes))
     TRY(destroyUnusedLocked(hashes))
     return {};
 }
@@ -341,14 +420,37 @@ Result<> ContentStore::finishDestructionsLocked()
     for (auto it = destroying.begin(); it != destroying.end(); ++it) {
         const auto& hash = it.key();
         const int generation = *it;
-        const auto path = objectPath(hash);
+        const auto entry = m_table.entries().find(hash);
+        const auto* recorded = entry != m_table.entries().end() ? entry->generation(generation) : nullptr;
+        const auto path = recorded ? generationPath(hash, *recorded) : objectPath(hash);
         if (!QFileInfo::exists(path)) {
             // the file was removed before the crash
             records.append(RefRecord::destroyed(hash, generation));
             continue;
         }
-        // every condition is checked again, as something may have started using the file since
-        const auto entry = m_table.entries().find(hash);
+        if (recorded && !recorded->retiredPath.isEmpty()) {
+            // every condition is checked again, as something may have started using the file since
+            QSet<QString> changing;
+            for (const auto& transaction : m_table.transactions()) {
+                changing.insert(transaction.newHash);
+            }
+            const auto canonicalId = FS::fileId(objectPath(hash));
+            const auto id = FS::fileId(path);
+            const bool alsoCanonical = !entry->current && id && canonicalId && *id == *canonicalId;
+            // the canonical copy first, so a crash never leaves it behind without a record
+            if (canDestroyGeneration(*entry, *recorded, changing) && (!alsoCanonical || FS::deleteLink(objectPath(hash))) &&
+                FS::deleteLink(path)) {
+                for (const auto& dir : { QFileInfo(path).absolutePath(), QFileInfo(objectPath(hash)).absolutePath() }) {
+                    if (auto flushed = FS::flushDir(dir); !flushed) {
+                        qWarning() << "Shared store:" << flushed.error();
+                    }
+                }
+                records.append(RefRecord::destroyed(hash, generation));
+            } else {
+                records.append(RefRecord::destroyAborted(hash));
+            }
+            continue;
+        }
         if (entry != m_table.entries().end() && entry->current && entry->current->id == generation && canDestroy(*entry, used) &&
             FS::deleteLink(path)) {
             if (auto flushed = FS::flushDir(QFileInfo(path).absolutePath()); !flushed) {
@@ -531,7 +633,7 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
                 // A recorded path, which verification already judged. If it now links to another stored file, that file
                 // is in use, though it can only be recorded once the old link is released.
                 if (existing->hash != link.hash || existing->generation != link.generation || existing->kind != link.kind) {
-                    records.append(RefRecord::linkSeen(link.hash, time, link.kind == LinkKind::Symbolic));
+                    records.append(RefRecord::linkSeen(link.hash, link.generation, time, link.kind == LinkKind::Symbolic));
                 }
                 continue;
             }
@@ -587,7 +689,8 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
         TRY(commitLocked(records))
     }
 
-    // 7. Stored files nothing uses
+    // 7. Stored files and damaged copies nothing uses
+    TRY(markUnusedGenerationsLocked({}))
     {
         const auto used = usedHashes();
         QList<QJsonObject> records;

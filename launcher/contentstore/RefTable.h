@@ -36,8 +36,11 @@ struct Generation {
     int id = 0;
     StoredIdentity identity;
     bool corrupt = false;
-    // where a retired generation is kept; empty for the current one, which is at the object's canonical path
+    // where a retired generation is kept, relative to the store; empty for the current one, which is at the object's
+    // canonical path
     QString retiredPath;
+    // for a retired generation: since when no link uses it
+    std::optional<qint64> unusedSince;
 
     bool operator==(const Generation&) const = default;
 };
@@ -100,6 +103,8 @@ struct Transaction {
     std::optional<PlacementKind> preparedKind;
     // what the path holds once the swap happened: a file id for hard links and local copies, a target for symbolic links
     QString expected;
+    // the generation the link uses; the current one when not set
+    std::optional<int> generation;
 
     bool operator==(const Transaction&) const = default;
 };
@@ -142,12 +147,17 @@ QJsonObject refLost(const RefKey& key, qint64 since);
 QJsonObject reconciled(const QString& clientId, qint64 time, bool complete = true);
 // since is when nothing used the file anymore; nullopt when something does again
 QJsonObject orphan(const QString& hash, std::optional<qint64> since);
-// a scan found a link to the file that isn't recorded yet, so it counts as used until then
-QJsonObject linkSeen(const QString& hash, qint64 time, bool symbolic);
+// a scan found a link to a generation of the file that isn't recorded yet, so it counts as used until then
+QJsonObject linkSeen(const QString& hash, int generation, qint64 time, bool symbolic);
 QJsonObject destroying(const QString& hash, int generation);
 QJsonObject destroyed(const QString& hash, int generation);
 // the destruction was given up, as the file turned out to be in use
 QJsonObject destroyAborted(const QString& hash);
+// The current generation turned out damaged: it is kept at retiredPath for the links that use it, and the hash has no
+// current generation until an intact copy is stored
+QJsonObject retire(const QString& hash, int generation, const QString& retiredPath);
+// no link uses the retired generation anymore
+QJsonObject generationUnused(const QString& hash, int generation, qint64 time);
 }  // namespace RefRecord
 
 // Which stored files exist and which instances link to them. Changed only by applying journal records, so it can always
