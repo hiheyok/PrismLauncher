@@ -11,6 +11,12 @@
 #include "FileSystemPrimitives.h"
 #include "archive/ExportToZipTask.h"
 
+// from MMCZip.h, which moc can't parse through its includes
+namespace MMCZip {
+using FilterFileFunction = std::function<bool(const QFileInfo&)>;
+bool collectFileListRecursively(const QString& rootDir, const QString& subDir, QFileInfoList* files, FilterFileFunction excludeFilter);
+}  // namespace MMCZip
+
 namespace {
 bool writeFile(const QString& path, const QByteArray& data)
 {
@@ -117,6 +123,33 @@ class ExportZipTest : public QObject {
         QVERIFY(task->warnings().join('\n').contains("resourcepacks/gone.zip"));
         QVERIFY(m_signalledWarnings.join('\n').contains("resourcepacks/gone.zip"));
         QFile::remove(path("instance/resourcepacks/gone.zip"));
+    }
+
+    void test_collectingFindsLinksToMissingFiles()
+    {
+        QVERIFY(QDir().mkpath(path("collect/mods")));
+        QVERIFY(writeFile(path("collect/mods/present.jar"), "present"));
+        if (!FS::createSymbolicLink(QFileInfo(path("nowhere/missing.jar")).absoluteFilePath(), path("collect/mods/missing.jar"))) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        // as the exports collect their files
+        QFileInfoList files;
+        QVERIFY(MMCZip::collectFileListRecursively(path("collect"), nullptr, &files, nullptr));
+        QStringList names;
+        for (const auto& file : files) {
+            names.append(file.fileName());
+        }
+        names.sort();
+        QCOMPARE(names, QStringList({ "missing.jar", "present.jar" }));
+
+        MMCZip::ExportToZipTask task(path("collected.zip"), path("collect"), files, "", true);
+        QSignalSpy finished(&task, &Task::finished);
+        task.start();
+        if (finished.isEmpty()) {
+            finished.wait(10000);
+        }
+        QVERIFY(task.wasSuccessful());
+        QVERIFY(task.warnings().join(' ').contains("missing.jar"));
     }
 };
 

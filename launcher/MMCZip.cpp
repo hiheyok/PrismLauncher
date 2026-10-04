@@ -43,6 +43,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QFileInfo>
+#include <QSet>
 #include <QUrl>
 #include <memory>
 
@@ -318,6 +319,17 @@ bool collectFileListRecursively(const QString& rootDir, const QString& subDir, Q
 
     // collect files
     entries = directory.entryInfoList(QDir::Files);
+    // Links whose target is gone are only listed as system entries on Unix. They are collected too, so an export can say it
+    // left them out, but other system entries, such as sockets, aren't.
+    QSet<QString> listed;
+    for (const auto& e : entries) {
+        listed.insert(e.absoluteFilePath());
+    }
+    for (const auto& e : directory.entryInfoList(QDir::System)) {
+        if (e.isSymbolicLink() && !e.exists() && !listed.contains(e.absoluteFilePath())) {
+            entries.append(e);
+        }
+    }
     for (const auto& e : entries) {
         if (excludeFilter && excludeFilter(e)) {
             QString relativeFilePath = rootDirectory.relativeFilePath(e.absoluteFilePath());
