@@ -295,6 +295,37 @@ class ConvertTest : public QObject {
         QCOMPARE(readFile(m_store->objectPath(sha256Of("original"))), "original");
     }
 
+    void test_fileReplacedDuringTheConversion()
+    {
+        QVERIFY(writeFile(file("mods/mod.jar"), "original"));
+        const auto target = file("mods/mod.jar");
+        // an editor saves by renaming a new file over the path, which the pin allows, and keeps it open for writing
+        bool replaced = false;
+        std::unique_ptr<QFile> writer;
+        FS::Testing::setFaultHook([&](FS::Testing::Operation operation, const QString& link) {
+            if (!replaced && operation == FS::Testing::Operation::HardLink && QFileInfo(link).fileName().startsWith("object.ingest-")) {
+                replaced =
+                    writeFile(path("elsewhere/saved.tmp"), "edited") && FS::replaceFile(path("elsewhere/saved.tmp"), target).has_value();
+                writer = std::make_unique<QFile>(target);
+                if (!writer->open(QIODevice::ReadWrite)) {
+                    writer.reset();
+                }
+            }
+            return false;
+        });
+        QVERIFY(!m_store->convert(destination("mods/mod.jar")));
+        FS::Testing::setFaultHook(nullptr);
+        QVERIFY(replaced);
+        QVERIFY(writer);
+        // the editor's file isn't stored, made read-only or linked, and writing to it changes no stored file
+        QVERIFY(m_store->table().entries().isEmpty());
+        QVERIFY(m_store->table().freezes().isEmpty());
+        QVERIFY(QFileInfo(target).isWritable());
+        QVERIFY(writer->write("CHANGED!") > 0);
+        writer->close();
+        QVERIFY(!QDirIterator(path("store/objects"), QDir::Files, QDirIterator::Subdirectories).hasNext());
+    }
+
     void test_fileOpenForWritingIsSkipped()
     {
         QVERIFY(writeFile(file("mods/mod.jar"), "being written"));

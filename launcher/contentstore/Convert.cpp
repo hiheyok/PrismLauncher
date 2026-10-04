@@ -171,7 +171,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
 
     if (!linkIn) {
         // Copy mode: the user's file is only read, then replaced only if it is still exactly what was copied
-        const auto stored = ingest(path, IngestMode::Copy);
+        const auto stored = ingestFile(path, IngestMode::Copy, std::nullopt, before.fileId);
         if (!stored) {
             return std::unexpected(stored.error());
         }
@@ -202,7 +202,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
         return std::unexpected(interruptedError());
     }
 
-    const auto stored = ingestFile(path, IngestMode::LinkIn, std::nullopt, true);
+    const auto stored = ingestFile(path, IngestMode::LinkIn, std::nullopt, before.fileId);
     if (!stored) {
         guard.restore();
         finish("failed");

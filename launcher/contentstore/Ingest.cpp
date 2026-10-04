@@ -15,9 +15,7 @@
 namespace {
 bool hardLink(const QString& target, const QString& link)
 {
-    std::error_code error;
-    std::filesystem::create_hard_link(StringUtils::toStdString(target), StringUtils::toStdString(link), error);
-    return !error;
+    return FS::createHardLink(target, link).has_value();
 }
 
 // Removes a candidate file, which may already be read-only
@@ -93,18 +91,22 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
                                                         IngestMode mode,
                                                         const std::optional<PrecomputedDigest>& digest)
 {
-    return ingestFile(source, mode, digest, false);
+    return ingestFile(source, mode, digest, std::nullopt);
 }
 
 Result<ContentStore::IngestResult> ContentStore::ingestFile(const QString& source,
                                                             IngestMode mode,
                                                             const std::optional<PrecomputedDigest>& digest,
-                                                            bool sourceFlushedAndPinned)
+                                                            const std::optional<FS::FileId>& pinnedSource)
 {
     if (!isWritable()) {
         return std::unexpected(QString("The shared store can't be changed"));
     }
     TRY_INTO(const auto sourceIdentity, FS::identity(source))
+    const auto replacedError = [&source] { return QString("%1 was replaced while it was being shared").arg(source); };
+    if (pinnedSource && sourceIdentity.fileId != *pinnedSource) {
+        return std::unexpected(replacedError());
+    }
 
     {
         // the file is already a stored file, linked into place earlier
@@ -154,6 +156,11 @@ Result<ContentStore::IngestResult> ContentStore::ingestFile(const QString& sourc
         if (!sourceLinked) {
             // another volume, or a file system without hard links: copy instead
             TRY_INTO(candidate, FS::reserveTemporarySibling(QDir(temporaryDir()).filePath("object"), "ingest"))
+        } else if (pinnedSource) {
+            // the link is bound to the file it was made from: every step after this goes through it, never the path
+            if (const auto linked = FS::fileId(candidate); !linked || *linked != *pinnedSource) {
+                return undo(replacedError());
+            }
         }
     } else if (mode == IngestMode::Move) {
         sourceMoved = FS::replaceFile(source, candidate).has_value();
@@ -171,7 +178,7 @@ Result<ContentStore::IngestResult> ContentStore::ingestFile(const QString& sourc
         hash = *copied;
     }
 
-    if (sourceLinked && sourceFlushedAndPinned) {
+    if (sourceLinked && pinnedSource) {
         // the candidate is the caller's source, which it flushed before pinning it
     } else if (auto flushed = FS::flushFile(candidate); !flushed) {
         return undo(flushed.error());
