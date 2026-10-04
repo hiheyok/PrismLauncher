@@ -1064,7 +1064,8 @@ class InstanceStaging : public Task {
     {
         auto* store = SharedContent::store();
         auto* instance = m_parent->getInstanceById(fresh.instanceId);
-        if (!store || fresh.files.isEmpty()) {
+        // an instance that stopped sharing keeps its new files local
+        if (!store || fresh.files.isEmpty() || (instance && !SharedContent::instanceShares(instance))) {
             emitSucceeded();
             return;
         }

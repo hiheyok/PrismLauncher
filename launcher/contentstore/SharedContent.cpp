@@ -4,11 +4,14 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "Application.h"
 #include "BaseInstance.h"
 #include "FileSystem.h"
 #include "FileSystemPrimitives.h"
+#include "InstanceList.h"
 #include "settings/SettingsObject.h"
 
 namespace SharedContent {
@@ -22,19 +25,97 @@ const QStringList& contentFolders()
 }
 
 constexpr auto g_exclusionSetting = "SharedStoreExcluded";
+constexpr auto g_unsharedFromSetting = "SharedStoreUnsharedFrom";
+constexpr auto g_instanceSharesSetting = "SharedStoreInstanceShares";
+
+ContentStore* s_testStore = nullptr;
+
+// the stored files local copies were made from, by exclusion key
+QJsonObject unsharedFromMap(BaseInstance* instance)
+{
+    if (!instance->settings()->contains(g_unsharedFromSetting)) {
+        return {};
+    }
+    return QJsonDocument::fromJson(instance->settings()->get(g_unsharedFromSetting).toString().toUtf8()).object();
+}
+
+void setUnsharedFromMap(BaseInstance* instance, const QJsonObject& map)
+{
+    if (instance->settings()->contains(g_unsharedFromSetting)) {
+        instance->settings()->set(g_unsharedFromSetting, QString::fromUtf8(QJsonDocument(map).toJson(QJsonDocument::Compact)));
+    }
+}
 }  // namespace
+
+void setStoreForTesting(ContentStore* store)
+{
+    s_testStore = store;
+}
 
 ContentStore* store()
 {
+    if (s_testStore) {
+        return s_testStore->isWritable() ? s_testStore : nullptr;
+    }
     // in tests the application macro doesn't work
     auto* application = APPLICATION_DYN;
     auto* store = application ? application->contentStore() : nullptr;
     return store && store->isWritable() ? store : nullptr;
 }
 
-ContentStore* storeFor(const BaseInstance* instance)
+ContentStore::ReconcileOptions reconcileOptions(const ContentStore& store)
+{
+    ContentStore::ReconcileOptions options;
+    auto* application = APPLICATION_DYN;
+    if (!application || !application->instances()) {
+        return options;
+    }
+    auto* instances = application->instances();
+    for (int i = 0; i < instances->count(); i++) {
+        auto* instance = instances->at(i);
+        options.knownOwners.insert(store.instanceOwner(instance->id()), QFileInfo(instance->gameRoot()).absoluteFilePath());
+    }
+    return options;
+}
+
+bool instanceShares(BaseInstance* instance)
+{
+    return !instance || !instance->settings()->contains(g_instanceSharesSetting) ||
+           instance->settings()->get(g_instanceSharesSetting).toBool();
+}
+
+void setInstanceShares(BaseInstance* instance, bool shares)
+{
+    if (instance && instance->settings()->contains(g_instanceSharesSetting)) {
+        instance->settings()->set(g_instanceSharesSetting, shares);
+    }
+}
+
+ContentStore* storeFor(BaseInstance* instance)
+{
+    return instance && instanceShares(instance) ? store() : nullptr;
+}
+
+ContentStore* linkedStoreFor(BaseInstance* instance)
 {
     return instance ? store() : nullptr;
+}
+
+FileState fileState(ContentStore* store, BaseInstance* instance, const QString& gameRoot, const QString& path)
+{
+    const QFileInfo info(path);
+    if (!store || info.isDir()) {
+        return FileState::NotShareable;
+    }
+    const auto relativePath = QDir(gameRoot).relativeFilePath(path);
+    if (isExcluded(instance, relativePath)) {
+        return FileState::KeptLocal;
+    }
+    const RefKey key{ store->instanceOwner(instance->id()), relativePath };
+    if (!store->refAt(key)) {
+        return FileState::Local;
+    }
+    return store->usesDamagedCopy(key) ? FileState::Damaged : FileState::Shared;
 }
 
 QString gameRootOf(const QString& instanceRoot)
@@ -110,6 +191,64 @@ void renameExclusion(BaseInstance* instance, const QString& from, const QString&
         excluded.append(exclusionKey(to));
         instance->settings()->set(g_exclusionSetting, excluded);
     }
+}
+
+void setExcluded(BaseInstance* instance, const QString& relativePath, bool excluded, const QString& unsharedFrom)
+{
+    if (!instance || !instance->settings()->contains(g_exclusionSetting)) {
+        return;
+    }
+    const auto key = exclusionKey(relativePath);
+    auto list = instance->settings()->get(g_exclusionSetting).toStringList();
+    list.removeAll(key);
+    if (excluded) {
+        list.append(key);
+    }
+    instance->settings()->set(g_exclusionSetting, list);
+
+    auto map = unsharedFromMap(instance);
+    map.remove(key);
+    if (excluded && !unsharedFrom.isEmpty()) {
+        map[key] = unsharedFrom;
+    }
+    setUnsharedFromMap(instance, map);
+}
+
+QString unsharedFrom(BaseInstance* instance, const QString& relativePath)
+{
+    return instance ? unsharedFromMap(instance).value(exclusionKey(relativePath)).toString() : QString();
+}
+
+Result<> keepLocal(ContentStore& store, BaseInstance* instance, const ContentStore::Destination& destination)
+{
+    QString hash;
+    if (store.refAt(destination.key())) {
+        TRY_INTO(const auto unshared, store.unshare(destination.key()))
+        hash = unshared.hash;
+    }
+    setExcluded(instance, destination.relativePath, true, hash);
+    return {};
+}
+
+bool canRevert(ContentStore& store, BaseInstance* instance, const QString& relativePath)
+{
+    const auto hash = unsharedFrom(instance, relativePath);
+    return isExcluded(instance, relativePath) && !hash.isEmpty() && store.hasIntactCopy(hash);
+}
+
+Result<> revertToShared(ContentStore& store,
+                        BaseInstance* instance,
+                        const ContentStore::Destination& destination,
+                        const FS::FileIdentity& replaces)
+{
+    const auto hash = unsharedFrom(instance, destination.relativePath);
+    if (hash.isEmpty() || !store.hasIntactCopy(hash)) {
+        return std::unexpected(QString("The shared version of %1 is no longer stored").arg(destination.relativePath));
+    }
+    // the user confirmed discarding exactly this file
+    TRY(store.placeAt({ destination, hash, replaces }))
+    setExcluded(instance, destination.relativePath, false);
+    return {};
 }
 
 Result<PlacementKind> installFile(ContentStore& store,

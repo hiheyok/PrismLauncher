@@ -45,6 +45,8 @@
 
 #include "DataMigrationTask.h"
 #include "contentstore/ContentStore.h"
+#include "contentstore/SharedContent.h"
+#include "contentstore/StoreTasks.h"
 #include "java/JavaInstallList.h"
 #include "net/PasteUpload.h"
 #include "tasks/Task.h"
@@ -67,6 +69,7 @@
 #include "ui/pages/global/LauncherPage.h"
 #include "ui/pages/global/MinecraftPage.h"
 #include "ui/pages/global/ProxyPage.h"
+#include "ui/pages/global/SharedStorePage.h"
 
 #include "ui/setupwizard/AutoJavaWizardPage.h"
 #include "ui/setupwizard/JavaWizardPage.h"
@@ -714,8 +717,10 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
         m_settings->registerSetting("SkinsDir", "skins");
         m_settings->registerSetting("JavaDir", "java");
 
-        // Shared content store: files kept once and linked into instances. Off by default until it's finished.
-        m_settings->registerSetting("SharedStoreEnabled", false);
+        // Shared content store: files kept once and linked into instances
+        m_settings->registerSetting("SharedStoreEnabled", true);
+        // look for links nobody recorded and release what is gone, after the instances are loaded
+        m_settings->registerSetting("SharedStoreReconcileOnStartup", true);
         m_settings->registerSetting("SharedStoreDir", "store");
         // Auto, HardLinks or Symlinks
         m_settings->registerSetting("SharedStoreLinkMode", "Auto");
@@ -940,6 +945,7 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
             m_globalSettingsProvider->addPage<AccountListPage>();
             m_globalSettingsProvider->addPage<APIPage>();
             m_globalSettingsProvider->addPage<ExternalToolsPage>();
+            m_globalSettingsProvider->addPage<SharedStorePage>();
             m_globalSettingsProvider->addPage<ProxyPage>();
         }
 
@@ -1037,6 +1043,14 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
         qInfo() << "Loading Instances...";
         m_instances->loadList();
         qInfo() << "<> Instances loaded.";
+    }
+
+    // the shared store looks for links nobody recorded and releases what is gone, in the background
+    if (m_contentStore && m_contentStore->isWritable() && m_settings->get("SharedStoreReconcileOnStartup").toBool()) {
+        m_contentStoreTask = makeShared<ReconcileStoreTask>(m_contentStore.get(), SharedContent::reconcileOptions(*m_contentStore));
+        connect(m_contentStoreTask.get(), &Task::failed, this,
+                [](const QString& reason) { qWarning() << "Shared store: reconciliation failed:" << reason; });
+        m_contentStoreTask->start();
     }
 
     // and accounts

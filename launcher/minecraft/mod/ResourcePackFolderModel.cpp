@@ -50,16 +50,16 @@ ResourcePackFolderModel::ResourcePackFolderModel(const QDir& dir,
                                                  QObject* parent)
     : ResourceFolderModel(dir, instance, isIndexed, createDir, parent)
 {
-    m_columnNames =
-        QStringList({ "Enable", "Image", "Name", "Version", "Pack Format", "Last Modified", "Provider", "Size", "File Name", "Update" });
+    m_columnNames = QStringList(
+        { "Enable", "Image", "Name", "Version", "Pack Format", "Last Modified", "Provider", "Size", "File Name", "Shared", "Update" });
     m_columnNamesTranslated = QStringList({ tr("Enable"), tr("Image"), tr("Name"), tr("Version"), tr("Pack Format"), tr("Last Modified"),
-                                            tr("Provider"), tr("Size"), tr("File Name"), tr("Update") });
-    m_columnSortKeys = { SortType::Enabled, SortType::Name,     SortType::Name, SortType::Version,  SortType::PackFormat,
-                         SortType::Date,    SortType::Provider, SortType::Size, SortType::Filename, SortType::LockUpdate };
+                                            tr("Provider"), tr("Size"), tr("File Name"), tr("Shared"), tr("Update") });
+    m_columnSortKeys = { SortType::Enabled,  SortType::Name, SortType::Name,     SortType::Version,  SortType::PackFormat, SortType::Date,
+                         SortType::Provider, SortType::Size, SortType::Filename, SortType::Filename, SortType::LockUpdate };
     m_columnResizeModes = { QHeaderView::Interactive, QHeaderView::Interactive,      QHeaderView::Stretch,     QHeaderView::Interactive,
                             QHeaderView::Interactive, QHeaderView::ResizeToContents, QHeaderView::Interactive, QHeaderView::Interactive,
-                            QHeaderView::Interactive, QHeaderView::Interactive };
-    m_columnsHideable = { false, true, false, true, true, true, true, true, true, true };
+                            QHeaderView::Interactive, QHeaderView::Interactive,      QHeaderView::Interactive };
+    m_columnsHideable = { false, true, false, true, true, true, true, true, true, true, true };
 }
 
 QVariant ResourcePackFolderModel::data(const QModelIndex& index, int role) const
@@ -137,6 +137,9 @@ QVariant ResourcePackFolderModel::data(const QModelIndex& index, int role) const
         case FileNameColumn:
             mappedIndex = index.siblingAtColumn(ResourceFolderModel::FileNameColumn);
             break;
+        case SharedColumn:
+            mappedIndex = index.siblingAtColumn(ResourceFolderModel::SharedColumn);
+            break;
         default:
             break;
     }
@@ -162,6 +165,7 @@ QVariant ResourcePackFolderModel::headerData(int section, [[maybe_unused]] Qt::O
                 case ProviderColumn:
                 case SizeColumn:
                 case FileNameColumn:
+                case SharedColumn:
                 case LockUpdateColumn:
                     return columnNames().at(section);
                 default:
@@ -187,6 +191,8 @@ QVariant ResourcePackFolderModel::headerData(int section, [[maybe_unused]] Qt::O
                     return tr("The size of the resource pack.");
                 case FileNameColumn:
                     return tr("The file name of the resource pack.");
+                case SharedColumn:
+                    return tr("Whether the file is shared with other instances, kept as a local copy, or a damaged shared copy.");
                 case LockUpdateColumn:
                     return tr("Should this mod be updated?");
                 default:

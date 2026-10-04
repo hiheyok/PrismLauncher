@@ -65,6 +65,10 @@ class ExternalResourcesPage : public QMainWindow, public BasePage {
 
     void lockUpdates();
     void unlockUpdates();
+    void updateSharingActions();
+    void keepLocal();
+    void revertToShared();
+    void restoreOriginal();
 
    protected:
     MinecraftInstance* m_instance = nullptr;

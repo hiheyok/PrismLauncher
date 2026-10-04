@@ -130,7 +130,9 @@ bool ResourceFolderModel::installResource(QString originalPath)
         case ResourceType::SINGLEFILE:
         case ResourceType::ZIPFILE:
         case ResourceType::LITEMOD: {
-            if (auto* store = sharedStore(); store && !SharedContent::isExcluded(m_instance, gameRelativePath(newPath))) {
+            // a new link, which only an instance that shares its files gets
+            if (auto* store = SharedContent::storeFor(m_instance);
+                store && !SharedContent::isExcluded(m_instance, gameRelativePath(newPath))) {
                 // the user's file is copied into the store, and the instance gets a link to it
                 if (QFile::exists(newPath + ".disabled")) {
                     removeSharedFile(newPath + ".disabled", [&] { return FS::deletePath(newPath + ".disabled"); });
@@ -338,10 +340,8 @@ bool ResourceFolderModel::setResourceEnabled(const QModelIndexList& indexes, Ena
 
 ContentStore* ResourceFolderModel::sharedStore() const
 {
-    // in tests the application macro doesn't work
-    auto* application = APPLICATION_DYN;
-    auto* store = application ? application->contentStore() : nullptr;
-    return store && store->isWritable() && m_instance ? store : nullptr;
+    // existing links are kept right even when the instance stopped sharing new files
+    return SharedContent::linkedStoreFor(m_instance);
 }
 
 void ResourceFolderModel::renameSharedFile(const QString& from, const QString& to) const
@@ -379,6 +379,106 @@ bool ResourceFolderModel::removeSharedFile(const QString& path, const std::funct
         return !QFileInfo::exists(path) && !QFileInfo(path).isSymbolicLink();
     }
     return true;
+}
+
+SharedContent::FileState ResourceFolderModel::sharedState(int row) const
+{
+    if (!m_instance || row < 0 || row >= m_resources.size() || m_resources[row]->type() == ResourceType::FOLDER) {
+        return SharedContent::FileState::NotShareable;
+    }
+    return SharedContent::fileState(sharedStore(), m_instance, m_instance->gameRoot(), m_resources[row]->fileinfo().absoluteFilePath());
+}
+
+bool ResourceFolderModel::canKeepLocal(const QModelIndex& index) const
+{
+    const auto state = sharedState(index.row());
+    return state == SharedContent::FileState::Shared || state == SharedContent::FileState::Damaged ||
+           state == SharedContent::FileState::Local;
+}
+
+bool ResourceFolderModel::canRevertToShared(const QModelIndex& index) const
+{
+    auto* store = SharedContent::storeFor(m_instance);
+    return store && sharedState(index.row()) == SharedContent::FileState::KeptLocal &&
+           SharedContent::canRevert(*store, m_instance, gameRelativePath(at(index.row()).fileinfo().absoluteFilePath()));
+}
+
+bool ResourceFolderModel::canRestoreOriginal(const QModelIndex& index) const
+{
+    auto* store = sharedStore();
+    if (!store || sharedState(index.row()) != SharedContent::FileState::Damaged) {
+        return false;
+    }
+    const auto ref = store->refAt(sharedDestination(at(index.row()).fileinfo().absoluteFilePath()).key());
+    return ref && store->hasIntactCopy(ref->hash);
+}
+
+QStringList ResourceFolderModel::keepLocal(const QModelIndexList& indexes)
+{
+    QStringList errors;
+    auto* store = sharedStore();
+    for (const auto& index : indexes) {
+        if (!store || index.column() != 0 || !canKeepLocal(index)) {
+            continue;
+        }
+        const auto path = at(index.row()).fileinfo().absoluteFilePath();
+        if (auto kept = SharedContent::keepLocal(*store, m_instance, sharedDestination(path)); !kept) {
+            errors.append(kept.error());
+        }
+        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+    }
+    return errors;
+}
+
+QMap<QString, FS::FileIdentity> ResourceFolderModel::fileIdentities(const QModelIndexList& indexes) const
+{
+    QMap<QString, FS::FileIdentity> identities;
+    for (const auto& index : indexes) {
+        const auto path = at(index.row()).fileinfo().absoluteFilePath();
+        if (auto identity = FS::identity(path)) {
+            identities[path] = *identity;
+        }
+    }
+    return identities;
+}
+
+QStringList ResourceFolderModel::revertToShared(const QModelIndexList& indexes, const QMap<QString, FS::FileIdentity>& identities)
+{
+    QStringList errors;
+    auto* store = SharedContent::storeFor(m_instance);
+    for (const auto& index : indexes) {
+        if (!store || index.column() != 0 || !canRevertToShared(index)) {
+            continue;
+        }
+        const auto path = at(index.row()).fileinfo().absoluteFilePath();
+        if (!identities.contains(path)) {
+            continue;
+        }
+        if (auto reverted = SharedContent::revertToShared(*store, m_instance, sharedDestination(path), identities[path]); !reverted) {
+            errors.append(reverted.error());
+        }
+        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+    }
+    update();
+    return errors;
+}
+
+QStringList ResourceFolderModel::restoreOriginal(const QModelIndexList& indexes)
+{
+    QStringList errors;
+    auto* store = sharedStore();
+    for (const auto& index : indexes) {
+        if (!store || index.column() != 0 || !canRestoreOriginal(index)) {
+            continue;
+        }
+        const auto path = at(index.row()).fileinfo().absoluteFilePath();
+        if (auto restored = store->restoreOriginal(sharedDestination(path).key()); !restored) {
+            errors.append(restored.error());
+        }
+        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+    }
+    update();
+    return errors;
 }
 
 void ResourceFolderModel::noteSharedFileRemoved(const QString& path) const
@@ -626,13 +726,51 @@ QVariant ResourceFolderModel::data(const QModelIndex& index, int role) const
                     return m_resources[row]->sizeStr();
                 case FileNameColumn:
                     return m_resources[row]->fileinfo().fileName();
+                case SharedColumn:
+                    switch (sharedState(row)) {
+                        case SharedContent::FileState::Shared:
+                            return tr("Shared");
+                        case SharedContent::FileState::Damaged:
+                            return tr("Damaged copy");
+                        case SharedContent::FileState::KeptLocal:
+                            return tr("Kept local");
+                        case SharedContent::FileState::Local:
+                            return tr("Local");
+                        case SharedContent::FileState::NotShareable:
+                            return {};
+                    }
+                    return {};
                 default:
                     return {};
             }
         case Qt::ToolTipRole: {
             QString tooltip = m_resources[row]->internalId();
+            const auto state = sharedState(row);
+            const bool shared = state == SharedContent::FileState::Shared || state == SharedContent::FileState::Damaged;
 
-            if (column == NameColumn) {
+            if (column == SharedColumn) {
+                switch (state) {
+                    case SharedContent::FileState::Shared:
+                        return tr(
+                            "Shared with other instances that use the same file, so it is stored once.\n"
+                            "Use \"Keep local copy\" before editing it, so the change only affects this instance.");
+                    case SharedContent::FileState::Damaged:
+                        return tr(
+                            "The shared file was found changed or damaged. This instance keeps the bytes it has until you choose:\n"
+                            "\"Restore original\" switches to the intact file, \"Keep local copy\" keeps these bytes as a local file.");
+                    case SharedContent::FileState::KeptLocal:
+                        return tr("Kept as a local copy: editing it only changes this instance, and updates stay local.");
+                    case SharedContent::FileState::Local:
+                        return tr("A local file of this instance. It is shared once it is updated or reinstalled through the launcher.");
+                    case SharedContent::FileState::NotShareable:
+                        return {};
+                }
+            }
+
+            if (column == NameColumn && shared) {
+                // the store's links are expected, and are handled safely by the launcher
+                tooltip += tr("\nShared with other instances. Use \"Keep local copy\" before editing it.");
+            } else if (column == NameColumn) {
                 if (APPLICATION->settings()->get("ShowModIncompat").toBool()) {
                     for (const QString& issue : at(row).issues()) {
                         tooltip += "\n" + issue;
@@ -659,7 +797,9 @@ QVariant ResourceFolderModel::data(const QModelIndex& index, int role) const
                 if (APPLICATION->settings()->get("ShowModIncompat").toBool() && at(row).hasIssues()) {
                     return QIcon::fromTheme("status-bad");
                 }
-                if (at(row).isSymLinkUnder(instDirPath()) || at(row).isMoreThanOneHardLink()) {
+                const auto state = sharedState(row);
+                if (state != SharedContent::FileState::Shared &&
+                    (at(row).isSymLinkUnder(instDirPath()) || at(row).isMoreThanOneHardLink())) {
                     return QIcon::fromTheme("status-yellow");
                 }
             }
@@ -710,6 +850,7 @@ QVariant ResourceFolderModel::headerData(int section, [[maybe_unused]] Qt::Orien
                 case ProviderColumn:
                 case SizeColumn:
                 case FileNameColumn:
+                case SharedColumn:
                 case LockUpdateColumn:
                     return columnNames().at(section);
                 default:
@@ -733,6 +874,8 @@ QVariant ResourceFolderModel::headerData(int section, [[maybe_unused]] Qt::Orien
                     return tr("The size of the resource.");
                 case FileNameColumn:
                     return tr("The file name of the resource.");
+                case SharedColumn:
+                    return tr("Whether the file is shared with other instances, kept as a local copy, or a damaged shared copy.");
                 case LockUpdateColumn:
                     return tr("Should this mod be updated?");
                 default:
@@ -796,7 +939,8 @@ void ResourceFolderModel::loadColumns(QTreeView* tree)
         for (auto i = 0; i < m_columnNames.size(); ++i) {
             if (m_columnsHideable[i]) {
                 auto name = m_columnNames[i];
-                tree->setColumnHidden(i, !visibility.value(name, false).toBool());
+                // the shared column is new, so it is shown until hidden
+                tree->setColumnHidden(i, !visibility.value(name, name == "Shared").toBool());
             }
         }
         tree->header()->blockSignals(false);

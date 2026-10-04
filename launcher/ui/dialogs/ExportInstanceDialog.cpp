@@ -156,10 +156,16 @@ void ExportInstanceDialog::doExport()
     connect(task.get(), &Task::failed, this,
             [this, output](QString reason) { CustomMessageBox::selectable(this, tr("Error"), reason, QMessageBox::Critical)->show(); });
     connect(task.get(), &Task::finished, this, [task] { task->deleteLater(); });
+    QStringList warnings;
+    connect(task.get(), &Task::warningLogged, this, [&warnings](const QString& line) { warnings.append(line); });
 
     ProgressDialog progress(this);
     progress.showSkipButton();
     auto result = progress.execWithTask(task.get());
+    if (result == QDialog::Accepted && !warnings.isEmpty()) {
+        // such as files left out because the file a link points to is gone
+        CustomMessageBox::selectable(this, tr("Exported with warnings"), warnings.join('\n'), QMessageBox::Warning)->exec();
+    }
     QDialog::done(result);
 }
 

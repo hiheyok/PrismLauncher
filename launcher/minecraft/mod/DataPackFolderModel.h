@@ -52,6 +52,7 @@ class DataPackFolderModel : public ResourceFolderModel {
         DateColumn,
         SizeColumn,
         FileNameColumn,
+        SharedColumn,
         LockUpdateColumn,
         NumColumns
     };

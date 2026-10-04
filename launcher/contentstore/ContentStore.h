@@ -287,6 +287,25 @@ class ContentStore {
     // The recorded link at key, safe to call while other threads change the store
     std::optional<Ref> refAt(const RefKey& key) const;
 
+    // The launchers that use the store, safe to call while other threads change the store
+    QMap<QString, ClientInfo> clients() const;
+
+    // Whether an intact copy of the file is stored, so it can be linked
+    bool hasIntactCopy(const QString& hash) const;
+
+    // Whether the link at key uses a copy that was found damaged
+    bool usesDamagedCopy(const RefKey& key) const;
+
+    struct Stats {
+        int files = 0;
+        // the size of the stored files
+        qint64 bytes = 0;
+        int links = 0;
+        // what the links would take as separate copies, beyond one copy of each file
+        qint64 savedBytes = 0;
+    };
+    Stats stats() const;
+
     // The hash of the stored file at path, when path is a hard link to the current generation of a stored file
     std::optional<QString> storedHashOf(const QString& path) const;
 

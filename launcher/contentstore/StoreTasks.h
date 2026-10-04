@@ -12,6 +12,8 @@ class VerifyStoreTask : public Task {
     Q_OBJECT
    public:
     explicit VerifyStoreTask(ContentStore* store) : m_store(store) {}
+    // the background work uses the store, which must outlive it
+    ~VerifyStoreTask() override { m_watcher.waitForFinished(); }
 
     const std::optional<ContentStore::VerifyReport>& report() const { return m_report; }
 
@@ -29,6 +31,7 @@ class DeepVerifyStoreTask : public Task {
     Q_OBJECT
    public:
     explicit DeepVerifyStoreTask(ContentStore* store) : m_store(store) {}
+    ~DeepVerifyStoreTask() override { m_watcher.waitForFinished(); }
 
     const std::optional<ContentStore::DeepVerifyReport>& report() const { return m_report; }
 
@@ -46,6 +49,7 @@ class ReconcileStoreTask : public Task {
     Q_OBJECT
    public:
     ReconcileStoreTask(ContentStore* store, ContentStore::ReconcileOptions options) : m_store(store), m_options(std::move(options)) {}
+    ~ReconcileStoreTask() override { m_watcher.waitForFinished(); }
 
     const std::optional<ContentStore::ReconcileReport>& report() const { return m_report; }
 

@@ -9,8 +9,10 @@
 
 #include "FileSystem.h"
 #include "FileSystemPrimitives.h"
+#include "NullInstance.h"
 #include "contentstore/ContentStore.h"
 #include "contentstore/SharedContent.h"
+#include "settings/INISettingsObject.h"
 
 namespace {
 bool writeFile(const QString& path, const QByteArray& data)
@@ -53,6 +55,8 @@ class SharedContentTest : public QObject {
     std::unique_ptr<ContentStore> m_store;
     qint64 m_time = 0;
     bool m_canCreateSymbolicLinks = false;
+    // the launcher settings instances fall back to
+    std::unique_ptr<INISettingsObject> m_globalSettings;
 
     QString path(const QString& name) const { return m_dir.filePath(name); }
     // the game folder of an instance
@@ -87,10 +91,31 @@ class SharedContentTest : public QObject {
         return QFileInfo::exists(m_store->objectPath(hash)) && m_store->table().entries().contains(hash);
     }
 
+    // An instance with the settings sharing uses, as the launcher registers them
+    std::unique_ptr<NullInstance> makeInstance(const QString& name) const
+    {
+        auto settings = std::make_unique<INISettingsObject>(path("instances/" + name + "/instance.cfg"));
+        settings->registerSetting("SharedStoreExcluded", QStringList());
+        settings->registerSetting("SharedStoreUnsharedFrom", QString());
+        settings->registerSetting("SharedStoreInstanceShares", true);
+        return std::make_unique<NullInstance>(m_globalSettings.get(), std::move(settings), path("instances/" + name));
+    }
+
+    SharedContent::FileState stateOf(BaseInstance* instance, const QString& relativePath) const
+    {
+        return SharedContent::fileState(m_store.get(), instance, game(instance->id()), file(instance->id(), relativePath));
+    }
+
    private slots:
     void initTestCase()
     {
         QVERIFY(m_dir.isValid());
+        m_globalSettings = std::make_unique<INISettingsObject>(QDir(m_dir.path()).filePath("launcher.cfg"));
+        for (const auto* setting :
+             { "ShowGameTime", "RecordGameTime", "PreLoadCommand", "PreLaunchCommand", "WrapperCommand", "PostExitCommand", "ShowConsole",
+               "AutoCloseConsole", "ShowConsoleOnError", "LogPrePostOutput", "ConsoleMaxLines", "ConsoleOverflowStop" }) {
+            m_globalSettings->registerSetting(setting, QVariant());
+        }
         const auto target = path("symlink-target");
         QVERIFY(writeFile(target, "target"));
         m_canCreateSymbolicLinks = FS::createSymbolicLink(QFileInfo(target).absoluteFilePath(), path("symlink-probe")).has_value();
@@ -413,6 +438,154 @@ class SharedContentTest : public QObject {
         place("a", "mods/mod.jar", "mod");
         QVERIFY(!m_store->forgetOwner(m_store->instanceOwner("a")));
         QVERIFY(m_store->table().ref(key("a", "mods/mod.jar")));
+    }
+
+    // Keeping local copies
+
+    void test_keepLocalMakesAWritableCopy()
+    {
+        auto instance = makeInstance("a");
+        const auto hash = place("a", "resourcepacks/pack.zip", "pack");
+        QCOMPARE(stateOf(instance.get(), "resourcepacks/pack.zip"), SharedContent::FileState::Shared);
+
+        QVERIFY(SharedContent::keepLocal(*m_store, instance.get(), destination("a", "resourcepacks/pack.zip")));
+        QCOMPARE(stateOf(instance.get(), "resourcepacks/pack.zip"), SharedContent::FileState::KeptLocal);
+        QVERIFY(QFileInfo(file("a", "resourcepacks/pack.zip")).isWritable());
+        QCOMPARE(readFile(file("a", "resourcepacks/pack.zip")), "pack");
+        QVERIFY(!m_store->table().ref(key("a", "resourcepacks/pack.zip")));
+        QCOMPARE(SharedContent::unsharedFrom(instance.get(), "resourcepacks/pack.zip"), hash);
+        // kept local whether enabled or disabled, and through updates
+        QVERIFY(SharedContent::isExcluded(instance.get(), "resourcepacks/pack.zip.disabled"));
+    }
+
+    void test_keepLocalOfALocalFile()
+    {
+        auto instance = makeInstance("a");
+        QVERIFY(writeFile(file("a", "mods/local.jar"), "local"));
+        QCOMPARE(stateOf(instance.get(), "mods/local.jar"), SharedContent::FileState::Local);
+        QVERIFY(SharedContent::keepLocal(*m_store, instance.get(), destination("a", "mods/local.jar")));
+        QCOMPARE(stateOf(instance.get(), "mods/local.jar"), SharedContent::FileState::KeptLocal);
+        // there is no shared version to revert to
+        QVERIFY(!SharedContent::canRevert(*m_store, instance.get(), "mods/local.jar"));
+    }
+
+    void test_revertToTheSharedVersion()
+    {
+        auto instance = makeInstance("a");
+        const auto hash = place("a", "mods/mod.jar", "original");
+        // another instance keeps it stored
+        QCOMPARE(place("b", "mods/mod.jar", "original"), hash);
+        QVERIFY(SharedContent::keepLocal(*m_store, instance.get(), destination("a", "mods/mod.jar")));
+        QVERIFY(writeFile(file("a", "mods/mod.jar"), "edited"));
+
+        QVERIFY(SharedContent::canRevert(*m_store, instance.get(), "mods/mod.jar"));
+        const auto confirmed = FS::identity(file("a", "mods/mod.jar"));
+        QVERIFY(confirmed);
+        const auto reverted = SharedContent::revertToShared(*m_store, instance.get(), destination("a", "mods/mod.jar"), *confirmed);
+        QVERIFY2(reverted, reverted ? "" : qPrintable(reverted.error()));
+        QCOMPARE(readFile(file("a", "mods/mod.jar")), "original");
+        QVERIFY(sameFile(file("a", "mods/mod.jar"), file("b", "mods/mod.jar")));
+        QCOMPARE(m_store->table().ref(key("a", "mods/mod.jar"))->hash, hash);
+        QCOMPARE(stateOf(instance.get(), "mods/mod.jar"), SharedContent::FileState::Shared);
+        QVERIFY(SharedContent::unsharedFrom(instance.get(), "mods/mod.jar").isEmpty());
+    }
+
+    void test_revertRefusesAFileChangedAfterConfirming()
+    {
+        auto instance = makeInstance("a");
+        place("a", "mods/mod.jar", "original");
+        place("b", "mods/mod.jar", "original");
+        QVERIFY(SharedContent::keepLocal(*m_store, instance.get(), destination("a", "mods/mod.jar")));
+        const auto confirmed = FS::identity(file("a", "mods/mod.jar"));
+        QVERIFY(confirmed);
+        // changed between the confirmation and the revert
+        QVERIFY(writeFile(file("a", "mods/mod.jar"), "edited after confirming"));
+        QVERIFY(!SharedContent::revertToShared(*m_store, instance.get(), destination("a", "mods/mod.jar"), *confirmed));
+        QCOMPARE(readFile(file("a", "mods/mod.jar")), "edited after confirming");
+        QCOMPARE(stateOf(instance.get(), "mods/mod.jar"), SharedContent::FileState::KeptLocal);
+    }
+
+    void test_revertNeedsTheStoredFile()
+    {
+        auto instance = makeInstance("a");
+        place("a", "mods/mod.jar", "only here");
+        // the only link becomes local, so nothing keeps the stored file
+        QVERIFY(SharedContent::keepLocal(*m_store, instance.get(), destination("a", "mods/mod.jar")));
+        QVERIFY(!SharedContent::canRevert(*m_store, instance.get(), "mods/mod.jar"));
+        const auto identity = FS::identity(file("a", "mods/mod.jar"));
+        QVERIFY(identity);
+        QVERIFY(!SharedContent::revertToShared(*m_store, instance.get(), destination("a", "mods/mod.jar"), *identity));
+        QCOMPARE(readFile(file("a", "mods/mod.jar")), "only here");
+    }
+
+    void test_damagedCopyState()
+    {
+        auto instance = makeInstance("a");
+        const auto hash = place("a", "mods/mod.jar", "original");
+        makeWritable(m_store->objectPath(hash));
+        QVERIFY(writeFile(m_store->objectPath(hash), "damaged"));
+        QVERIFY(m_store->deepVerify());
+        QCOMPARE(stateOf(instance.get(), "mods/mod.jar"), SharedContent::FileState::Damaged);
+    }
+
+    void test_notShareable()
+    {
+        auto instance = makeInstance("a");
+        QVERIFY(QDir().mkpath(file("a", "resourcepacks/folder")));
+        QCOMPARE(stateOf(instance.get(), "resourcepacks/folder"), SharedContent::FileState::NotShareable);
+        QVERIFY(writeFile(file("a", "mods/mod.jar"), "mod"));
+        QCOMPARE(SharedContent::fileState(nullptr, instance.get(), game("a"), file("a", "mods/mod.jar")),
+                 SharedContent::FileState::NotShareable);
+    }
+
+    void test_instanceCanStopSharing()
+    {
+        auto instance = makeInstance("a");
+        SharedContent::setStoreForTesting(m_store.get());
+        QCOMPARE(SharedContent::storeFor(instance.get()), m_store.get());
+        SharedContent::setInstanceShares(instance.get(), false);
+        QVERIFY(!SharedContent::storeFor(instance.get()));
+        SharedContent::setInstanceShares(instance.get(), true);
+        QCOMPARE(SharedContent::storeFor(instance.get()), m_store.get());
+        SharedContent::setStoreForTesting(nullptr);
+    }
+
+    void test_optedOutInstanceKeepsItsLinksRight()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        auto instance = makeInstance("a");
+        SharedContent::setStoreForTesting(m_store.get());
+        const auto hash = place("a", "resourcepacks/pack.zip", "pack", LinkKind::Symbolic);
+        SharedContent::setInstanceShares(instance.get(), false);
+
+        // no new links, but the existing ones are still looked after
+        QVERIFY(!SharedContent::storeFor(instance.get()));
+        auto* linked = SharedContent::linkedStoreFor(instance.get());
+        QCOMPARE(linked, m_store.get());
+        QCOMPARE(stateOf(instance.get(), "resourcepacks/pack.zip"), SharedContent::FileState::Shared);
+
+        // trashing the link turns it into a copy first, so it outlives the stored file
+        QVERIFY(SharedContent::removeFile(*linked, key("a", "resourcepacks/pack.zip"),
+                                          [this] { return FS::move(file("a", "resourcepacks/pack.zip"), path("trash/pack.zip")); }));
+        m_time += 1;
+        QVERIFY(m_store->reconcile({})->complete);
+        QVERIFY(!isStored(hash));
+        QCOMPARE(readFile(path("trash/pack.zip")), "pack");
+        SharedContent::setStoreForTesting(nullptr);
+    }
+
+    void test_stats()
+    {
+        place("a", "mods/mod.jar", "12345");
+        place("b", "mods/mod.jar", "12345");
+        place("b", "mods/other.jar", "abc");
+        const auto stats = m_store->stats();
+        QCOMPARE(stats.files, 2);
+        QCOMPARE(stats.bytes, qint64(8));
+        QCOMPARE(stats.links, 3);
+        QCOMPARE(stats.savedBytes, qint64(5));
     }
 
     // Renaming

@@ -26,6 +26,13 @@
 #include "tasks/Task.h"
 
 namespace MMCZip {
+// Whether the file is a symbolic link whose target is gone. Checks the target itself: on Windows, a QFileInfo from a
+// folder listing can report such a link as existing.
+inline bool isDanglingLink(const QFileInfo& file)
+{
+    return file.isSymbolicLink() && !QFileInfo::exists(file.symLinkTarget());
+}
+
 class ExportToZipTask : public Task {
     Q_OBJECT
    public:

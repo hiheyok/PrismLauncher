@@ -161,6 +161,10 @@ bool ArchiveWriter::addFile(const QString& fileName, const QString& fileDest)
         archive_entry_set_perm(entry, fileInfo.permissions());
     } else if (fileInfo.isFile()) {
         archive_entry_set_filetype(entry, AE_IFREG);
+        // shared files are read-only, which the exported copy shouldn't be
+        if (const auto perm = archive_entry_perm(entry); (perm & 0200) == 0) {
+            archive_entry_set_perm(entry, perm | 0200);
+        }
     } else {
         qCritical() << "Unsupported file type:" << fileInfo.filePath();
         return false;

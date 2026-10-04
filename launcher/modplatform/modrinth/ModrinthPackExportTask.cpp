@@ -212,6 +212,8 @@ void ModrinthPackExportTask::buildZip()
         stepProgress(*progressStep);
     });
 
+    // such as files left out of the archive
+    connect(zipTask.get(), &Task::warningLogged, this, [this](const QString& line) { logWarning(line); });
     connect(zipTask.get(), &Task::succeeded, this, &ModrinthPackExportTask::emitSucceeded);
     connect(zipTask.get(), &Task::aborted, this, &ModrinthPackExportTask::emitAborted);
     connect(zipTask.get(), &Task::failed, this, [this, progressStep](QString reason) {

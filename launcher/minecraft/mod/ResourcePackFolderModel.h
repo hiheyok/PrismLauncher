@@ -17,6 +17,7 @@ class ResourcePackFolderModel : public ResourceFolderModel {
         ProviderColumn,
         SizeColumn,
         FileNameColumn,
+        SharedColumn,
         LockUpdateColumn,
         NumColumns
     };

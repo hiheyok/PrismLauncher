@@ -91,6 +91,10 @@ void FlamePackExportTask::collectHashes()
     ConcurrentTask::Ptr hashingTask(new ConcurrentTask("MakeHashesTask", APPLICATION->settings()->get("NumberOfConcurrentTasks").toInt()));
     task.reset(hashingTask);
     for (const QFileInfo& file : m_files) {
+        // a link whose target is gone has nothing to hash; the archive leaves it out and says so
+        if (MMCZip::isDanglingLink(file)) {
+            continue;
+        }
         const QString relative = m_gameRoot.relativeFilePath(file.absoluteFilePath());
         // require sensible file types
         if (!std::any_of(FILE_EXTENSIONS.begin(), FILE_EXTENSIONS.end(), [&relative](const QString& extension) {
@@ -363,6 +367,8 @@ void FlamePackExportTask::buildZip()
         stepProgress(*progressStep);
     });
 
+    // such as files left out of the archive
+    connect(zipTask.get(), &Task::warningLogged, this, [this](const QString& line) { logWarning(line); });
     connect(zipTask.get(), &Task::succeeded, this, &FlamePackExportTask::emitSucceeded);
     connect(zipTask.get(), &Task::aborted, this, &FlamePackExportTask::emitAborted);
     connect(zipTask.get(), &Task::failed, this, [this, progressStep](QString reason) {

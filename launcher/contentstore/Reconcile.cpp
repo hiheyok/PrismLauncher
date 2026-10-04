@@ -813,3 +813,45 @@ std::optional<Ref> ContentStore::refAt(const RefKey& key) const
     QMutexLocker locker(&m_mutex);
     return m_table.ref(key);
 }
+
+bool ContentStore::hasIntactCopy(const QString& hash) const
+{
+    QMutexLocker locker(&m_mutex);
+    const auto entry = m_table.entries().find(hash);
+    return entry != m_table.entries().end() && entry->current;
+}
+
+ContentStore::Stats ContentStore::stats() const
+{
+    QMutexLocker locker(&m_mutex);
+    Stats stats;
+    QHash<QString, int> links;
+    for (const auto& ref : m_table.refs()) {
+        links[ref.hash]++;
+    }
+    for (const auto& entry : m_table.entries()) {
+        stats.files++;
+        stats.bytes += entry.size;
+        const int count = links.value(entry.hash);
+        stats.links += count;
+        if (count > 1) {
+            stats.savedBytes += entry.size * (count - 1);
+        }
+    }
+    return stats;
+}
+
+bool ContentStore::usesDamagedCopy(const RefKey& key) const
+{
+    QMutexLocker locker(&m_mutex);
+    const auto ref = m_table.ref(key);
+    const auto entry = ref ? m_table.entries().find(ref->hash) : m_table.entries().end();
+    const auto* generation = entry != m_table.entries().end() ? entry->generation(ref->generation) : nullptr;
+    return generation && generation->corrupt;
+}
+
+QMap<QString, ClientInfo> ContentStore::clients() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_table.clients();
+}
