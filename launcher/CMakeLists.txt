@@ -80,6 +80,8 @@ set(CORE_SOURCES
     contentstore/Placement.cpp
     contentstore/Reconcile.cpp
     contentstore/Repair.cpp
+    contentstore/SharedContent.h
+    contentstore/SharedContent.cpp
     contentstore/Journal.h
     contentstore/Journal.cpp
     contentstore/Recovery.h

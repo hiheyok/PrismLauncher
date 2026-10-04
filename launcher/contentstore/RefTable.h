@@ -128,6 +128,8 @@ QJsonObject client(const QString& clientId, const QString& dataDir, qint64 lastS
 // volume identifies the volume of the root, to tell a deleted root from one on a drive that isn't connected
 QJsonObject owner(const QString& owner, const QString& root, const QString& volume = {});
 QJsonObject removeOwner(const QString& owner);
+// the owner's folder was renamed, which also changes its id, such as when an instance folder is renamed
+QJsonObject renameOwner(const QString& from, const QString& to, const QString& root, const QString& volume = {});
 // unrecorded: the file was found in the store without a record
 QJsonObject publish(const QString& hash, qint64 size, const Generation& generation, bool unrecorded = false);
 QJsonObject updateIdentity(const QString& hash, int generation, const StoredIdentity& identity);

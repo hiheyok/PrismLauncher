@@ -514,6 +514,9 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
             continue;
         }
         item.swapped = true;
+        // Renaming a hard link over another link to the same file does nothing on POSIX, which leaves the temporary
+        // link, such as when a stored file is placed where it already is
+        discardFile(item.transaction.temporaryPath);
         if (interrupted(PlacementStep::Swapped)) {
             return interruptedResults();
         }
@@ -557,8 +560,9 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
     // the files that were replaced may not be used by anything anymore
     QSet<QString> replaced;
     for (const auto& item : items) {
-        if (item.swapped && item.oldRef) {
-            replaced.insert(item.oldRef->hash);
+        // also a ref whose link was already gone, which the commit replaced
+        if (item.swapped && item.transaction.oldHash) {
+            replaced.insert(*item.transaction.oldHash);
         }
     }
     if (auto released = releaseLocked(replaced); !released) {

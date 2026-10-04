@@ -473,6 +473,18 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
     ReconcileReport report;
     report.complete = true;
     const auto time = now();
+
+    // instances that exist are scanned, whether or not a link of theirs is recorded
+    {
+        QList<QJsonObject> records;
+        for (auto it = options.knownOwners.begin(); it != options.knownOwners.end(); ++it) {
+            if (isOwnOwner(it.key()) && m_table.owners().value(it.key()) != *it && QFileInfo(*it).isDir()) {
+                const auto rootId = FS::fileId(*it, true);
+                records.append(RefRecord::owner(it.key(), *it, rootId ? QString::number(rootId->volume, 16) : QString()));
+            }
+        }
+        TRY(commitLocked(records))
+    }
     const auto uncertain = [&report](const QString& path) {
         report.complete = false;
         report.uncertain.append(path);
@@ -709,4 +721,95 @@ Result<ContentStore::ReconcileReport> ContentStore::reconcile(const ReconcileOpt
         }
     }
     return report;
+}
+
+Result<> ContentStore::forgetRemoved(const RefKey& key)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    const auto ref = m_table.ref(key);
+    if (!ref || !m_table.owners().contains(key.owner)) {
+        return {};
+    }
+    if (presence(ownerPath(key), m_table.ownerVolume(key.owner)) != Presence::Absent) {
+        return std::unexpected(QString("%1 is still there").arg(ownerPath(key)));
+    }
+    TRY(commitLocked({ RefRecord::removeRef(key) }))
+    return releaseLocked({ ref->hash });
+}
+
+Result<> ContentStore::forgetOwner(const QString& owner)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    if (!m_table.owners().contains(owner)) {
+        return {};
+    }
+    const auto root = m_table.owners().value(owner);
+    if (presence(root, m_table.ownerVolume(owner)) != Presence::Absent) {
+        return std::unexpected(QString("%1 is still there").arg(root));
+    }
+    QSet<QString> released;
+    for (auto it = m_table.refs().begin(); it != m_table.refs().end(); ++it) {
+        if (it.key().owner == owner) {
+            released.insert(it->hash);
+        }
+    }
+    TRY(commitLocked({ RefRecord::removeOwner(owner) }))
+    return releaseLocked(released);
+}
+
+Result<> ContentStore::renameOwner(const QString& from, const QString& to, const QString& root)
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    if (!m_table.owners().contains(from)) {
+        return {};
+    }
+    for (const auto& transaction : m_table.transactions()) {
+        if (transaction.key.owner == from) {
+            return std::unexpected(QString("Links of %1 are being changed").arg(from));
+        }
+    }
+    const auto rootId = FS::fileId(root, true);
+    return commitLocked({ RefRecord::renameOwner(from, to, root, rootId ? QString::number(rootId->volume, 16) : QString()) });
+}
+
+QList<RefKey> ContentStore::symbolicLinksOf(const QString& owner) const
+{
+    QMutexLocker locker(&m_mutex);
+    QList<RefKey> keys;
+    for (auto it = m_table.refs().begin(); it != m_table.refs().end(); ++it) {
+        if (it.key().owner == owner && it->kind == LinkKind::Symbolic) {
+            keys.append(it.key());
+        }
+    }
+    return keys;
+}
+
+std::optional<QString> ContentStore::storedHashOf(const QString& path) const
+{
+    const auto id = FS::fileId(path);
+    if (!id) {
+        return std::nullopt;
+    }
+    QMutexLocker locker(&m_mutex);
+    for (const auto& entry : m_table.entries()) {
+        if (entry.current && entry.current->identity.sameFile(*id)) {
+            return entry.hash;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<Ref> ContentStore::refAt(const RefKey& key) const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_table.ref(key);
 }
