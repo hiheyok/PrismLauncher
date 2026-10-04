@@ -577,6 +577,40 @@ class DeepVerifyTest : public QObject {
         QCOMPARE(readFile(path("b/resourcepacks/pack.zip")), "edited");
     }
 
+    void test_retiredFileUsedAgainNeedsANewScan()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("original");
+        QVERIFY(place(hash, "resourcepacks/pack.zip", "a", LinkKind::Symbolic));
+        QVERIFY(place(hash, "mods/other.jar", "b", LinkKind::Hard));
+        const auto generation = currentGeneration(hash);
+        tamper(hash, "edited");
+        deepVerify();
+        // no recorded link uses the damaged copy anymore, from now on
+        QVERIFY(m_store->unshare(key("resourcepacks/pack.zip")));
+        QVERIFY(m_store->unshare(key("mods/other.jar", "b")));
+
+        // but b links to it, and a scan records that
+        QVERIFY(QDir(path("b")).mkpath("resourcepacks"));
+        QVERIFY(FS::createSymbolicLink(retiredPath(hash, generation), path("b/resourcepacks/first.zip")));
+        m_time += 1;
+        QCOMPARE(m_store->reconcile({})->adopted, 1);
+
+        // another link appears, then the recorded one is kept locally: the earlier scan can't vouch for the new link
+        QVERIFY(FS::createSymbolicLink(retiredPath(hash, generation), path("b/resourcepacks/second.zip")));
+        m_time += 1;
+        QVERIFY(m_store->unshare(key("resourcepacks/first.zip", "b")));
+        QVERIFY(QFileInfo::exists(retiredPath(hash, generation)));
+        QCOMPARE(readFile(path("b/resourcepacks/second.zip")), "edited");
+
+        // the next scan finds it
+        m_time += 1;
+        QCOMPARE(m_store->reconcile({})->adopted, 1);
+        QVERIFY(QFileInfo::exists(retiredPath(hash, generation)));
+    }
+
     void test_unrelatedLinkIsNotRepaired()
     {
         if (!m_canCreateSymbolicLinks) {

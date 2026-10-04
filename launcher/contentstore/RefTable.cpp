@@ -378,6 +378,8 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
         }
         entry->orphanSince.reset();
         entry->unrecorded = false;
+        // used again, so it is unused only from when its last link goes again
+        findGeneration(*entry, generation)->unusedSince.reset();
         // a single assignment, so replacing a ref with one to the same object never loses it
         m_refs[transaction.key] = { transaction.newHash, kind, generation, RefState::Live, std::nullopt };
     }
@@ -430,6 +432,10 @@ Result<> RefTable::apply(const QJsonObject& record)
         }
         entry->orphanSince.reset();
         entry->unrecorded = false;
+        // used again, so it is unused only from when its last link goes again
+        if (auto* generation = findGeneration(*entry, ref.generation)) {
+            generation->unusedSince.reset();
+        }
         m_refs[key] = ref;
         return {};
     }
