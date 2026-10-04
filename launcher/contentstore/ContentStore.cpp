@@ -193,6 +193,9 @@ ContentStore::State ContentStore::loadTable(State state)
     if (auto finished = finishDestructionsLocked(); !finished) {
         return setState(State::Disabled, finished.error());
     }
+    if (auto finished = finishFreezesLocked().and_then([this] { return lowerWriterVersionLocked(); }); !finished) {
+        return setState(State::Disabled, finished.error());
+    }
     return setState(State::Writable);
 }
 

@@ -336,6 +336,20 @@ QJsonObject generationUnused(const QString& hash, int generation, qint64 time)
     return { { "type", "generationUnused" }, { "hash", hash }, { "generation", generation }, { "time", time } };
 }
 
+QJsonObject freeze(const QString& conversion, const Freeze& freeze)
+{
+    return { { "type", "freeze" },
+             { "conversion", conversion },
+             { "path", freeze.path },
+             { "fileId", freeze.fileId },
+             { "permissions", freeze.permissions } };
+}
+
+QJsonObject unfreeze(const QString& conversion, const QString& outcome)
+{
+    return { { "type", "unfreeze" }, { "conversion", conversion }, { "outcome", outcome } };
+}
+
 QJsonObject destroyAborted(const QString& hash)
 {
     return { { "type", "destroyAborted" }, { "hash", hash } };
@@ -538,6 +552,15 @@ Result<> RefTable::apply(const QJsonObject& record)
         generation->unusedSince = record["time"].toInteger();
         return {};
     }
+    if (type == "freeze") {
+        m_freezes[record["conversion"].toString()] = { record["path"].toString(), record["fileId"].toString(),
+                                                       record["permissions"].toInt() };
+        return {};
+    }
+    if (type == "unfreeze") {
+        m_freezes.remove(record["conversion"].toString());
+        return {};
+    }
     if (type == "destroyAborted") {
         m_destroying.remove(record["hash"].toString());
         return {};
@@ -708,11 +731,20 @@ QJsonObject RefTable::snapshot() const
         destroying[it.key()] = *it;
     }
 
-    return { { "entries", entries },        { "refs", refs },
-             { "owners", owners },          { "ownerVolumes", ownerVolumes },
-             { "clients", clients },        { "transactions", transactions },
-             { "destroying", destroying },  { "nextTransactionId", m_nextTransactionId },
-             { "latestTime", m_latestTime } };
+    QJsonObject snapshot{ { "entries", entries },       { "refs", refs },
+                          { "owners", owners },         { "ownerVolumes", ownerVolumes },
+                          { "clients", clients },       { "transactions", transactions },
+                          { "destroying", destroying }, { "nextTransactionId", m_nextTransactionId },
+                          { "latestTime", m_latestTime } };
+    // only written when there are any, so a snapshot without them is one a version 1 launcher fully understands
+    if (!m_freezes.isEmpty()) {
+        QJsonObject freezes;
+        for (auto it = m_freezes.begin(); it != m_freezes.end(); ++it) {
+            freezes[it.key()] = QJsonObject{ { "path", it->path }, { "fileId", it->fileId }, { "permissions", it->permissions } };
+        }
+        snapshot["freezes"] = freezes;
+    }
+    return snapshot;
 }
 
 Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
@@ -780,5 +812,10 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
     }
     table.m_nextTransactionId = snapshot["nextTransactionId"].toInteger(1);
     table.m_latestTime = snapshot["latestTime"].toInteger();
+    const auto freezes = snapshot["freezes"].toObject();
+    for (auto it = freezes.begin(); it != freezes.end(); ++it) {
+        const auto json = it->toObject();
+        table.m_freezes[it.key()] = { json["path"].toString(), json["fileId"].toString(), json["permissions"].toInt() };
+    }
     return table;
 }

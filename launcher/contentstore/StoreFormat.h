@@ -20,8 +20,11 @@ enum class StoreAccess : std::uint8_t {
 
 // The compatibility header of a content store, kept in format.json and later also in every snapshot and journal segment
 struct StoreFormat {
-    // the format version written by this build
-    static constexpr int CurrentVersion = 1;
+    // the format version of this build: 1 shares new files, 2 also converts existing ones
+    static constexpr int CurrentVersion = 2;
+    // the oldest version that can change a store while it holds state only version 2 understands, such as a conversion
+    // in progress
+    static constexpr int ConversionWriterVersion = 2;
 
     int formatVersion = CurrentVersion;
     // the oldest launcher format version that can read the store
