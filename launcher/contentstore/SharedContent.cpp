@@ -144,11 +144,14 @@ int shareFreshFiles(ContentStore& store,
             continue;
         }
         const auto target = destination(store, instanceId, gameRoot, path);
-        if ((excluded && excluded(target.relativePath)) || store.refAt(target.key())) {
+        if (excluded && excluded(target.relativePath)) {
             continue;
         }
-
         std::optional<QString> hash = store.storedHashOf(path);
+        // already shared, unless a new file replaced the recorded one, such as a modpack update under the same name
+        if (const auto ref = store.refAt(target.key()); ref && hash == ref->hash) {
+            continue;
+        }
         if (!hash) {
             // other hard links may be another instance's files, which must not become read-only
             if (FS::hardLinkCount(path) != 1) {

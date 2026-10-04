@@ -231,6 +231,25 @@ class SharedContentTest : public QObject {
         QCOMPARE(m_store->table().refs().size(), 1);
     }
 
+    void test_updatedFileWithTheSameNameIsShared()
+    {
+        QVERIFY(writeFile(file("a", "mods/mod.jar"), "version 1"));
+        QCOMPARE(SharedContent::shareFreshFiles(*m_store, "a", game("a"), SharedContent::shareableFiles(game("a"))), 1);
+        const auto oldHash = sha256Of("version 1");
+
+        // a modpack update puts a new version under the same name
+        QVERIFY(FS::deleteLink(file("a", "mods/mod.jar")));
+        QVERIFY(writeFile(file("a", "mods/mod.jar"), "version 2"));
+        QCOMPARE(SharedContent::shareFreshFiles(*m_store, "a", game("a"), SharedContent::shareableFiles(game("a"))), 1);
+
+        QCOMPARE(m_store->table().ref(key("a", "mods/mod.jar"))->hash, sha256Of("version 2"));
+        QVERIFY(sameFile(file("a", "mods/mod.jar"), m_store->objectPath(sha256Of("version 2"))));
+        QVERIFY(!isStored(oldHash));
+        const auto verified = m_store->verify();
+        QVERIFY(verified);
+        QVERIFY(verified->replaced.isEmpty() && verified->missing.isEmpty());
+    }
+
     void test_filesKeptLocalAreNotShared()
     {
         QVERIFY(writeFile(file("a", "mods/mod.jar.disabled"), "kept local"));
