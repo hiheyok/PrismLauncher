@@ -218,6 +218,15 @@ QJsonObject removeOwner(const QString& owner)
     return { { "type", "removeOwner" }, { "owner", owner } };
 }
 
+QJsonObject renameOwner(const QString& from, const QString& to, const QString& root, const QString& volume)
+{
+    QJsonObject json{ { "type", "renameOwner" }, { "from", from }, { "to", to }, { "root", root } };
+    if (!volume.isEmpty()) {
+        json["volume"] = volume;
+    }
+    return json;
+}
+
 QJsonObject publish(const QString& hash, qint64 size, const Generation& generation, bool unrecorded)
 {
     QJsonObject json{ { "type", "publish" }, { "hash", hash }, { "size", size }, { "generation", generationToJson(generation) } };
@@ -389,6 +398,26 @@ Result<> RefTable::apply(const QJsonObject& record)
         m_owners.remove(owner);
         m_ownerVolumes.remove(owner);
         m_refs.removeIf([&owner](const auto& it) { return it.key().owner == owner; });
+        return {};
+    }
+    if (type == "renameOwner") {
+        const auto from = record["from"].toString();
+        const auto to = record["to"].toString();
+        if (from != to &&
+            (m_owners.contains(to) || std::ranges::any_of(m_refs.keys(), [&to](const RefKey& key) { return key.owner == to; }))) {
+            return std::unexpected(QString("Rename to an owner that exists"));
+        }
+        QMap<RefKey, Ref> refs;
+        for (auto it = m_refs.begin(); it != m_refs.end(); ++it) {
+            refs[it.key().owner == from ? RefKey{ to, it.key().relativePath } : it.key()] = *it;
+        }
+        m_refs = refs;
+        m_owners.remove(from);
+        m_ownerVolumes.remove(from);
+        m_owners[to] = record["root"].toString();
+        if (record.contains("volume")) {
+            m_ownerVolumes[to] = record["volume"].toString();
+        }
         return {};
     }
     if (type == "addRef") {

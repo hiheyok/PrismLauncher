@@ -152,9 +152,10 @@ class ContentStore {
     };
 
     struct ReconcileOptions {
-        // the owners of this launcher that still exist, such as the instances in the instance list. Links of other
+        // The owners of this launcher that still exist, by their root, such as the instances in the instance list. They
+        // are scanned even if no link of theirs is recorded, such as an instance restored from the trash. Links of other
         // owners whose folder is definitely gone are released.
-        QSet<QString> knownOwners;
+        QMap<QString, QString> knownOwners;
     };
 
     struct ReconcileReport {
@@ -230,6 +231,25 @@ class ContentStore {
 
     // Destroys the stored files that nothing uses, when that is certain. Returns how many were destroyed.
     Result<int> destroyUnused();
+
+    // Records that the launcher removed the link at key, such as by deleting or trashing the file. Fails if the path still
+    // holds a file. A hard link in the system trash keeps its stored file, as its link count shows.
+    Result<> forgetRemoved(const RefKey& key);
+
+    // Records that the folder of an owner was removed, such as a deleted or trashed instance, releasing all its links
+    Result<> forgetOwner(const QString& owner);
+
+    // Records that an owner's folder was renamed, which also changes its id
+    Result<> renameOwner(const QString& from, const QString& to, const QString& root);
+
+    // The symbolic links of an owner
+    QList<RefKey> symbolicLinksOf(const QString& owner) const;
+
+    // The recorded link at key, safe to call while other threads change the store
+    std::optional<Ref> refAt(const RefKey& key) const;
+
+    // The hash of the stored file at path, when path is a hard link to the current generation of a stored file
+    std::optional<QString> storedHashOf(const QString& path) const;
 
     // A hint that the file at key was removed, such as from a folder watcher. Marks its link missing if it is gone.
     void noteRemoved(const RefKey& key);
@@ -315,7 +335,7 @@ class ContentStore {
     RefTable m_table;
     StoreFormat m_format;
     // serializes changes to the journal and table
-    QMutex m_mutex;
+    mutable QMutex m_mutex;
     std::shared_ptr<LeaseCounts> m_leases = std::make_shared<LeaseCounts>();
     State m_state = State::Closed;
     QString m_statusMessage;

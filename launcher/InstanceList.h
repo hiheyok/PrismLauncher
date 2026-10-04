@@ -137,7 +137,13 @@ class InstanceList : public QAbstractListModel {
      * should_override is used when another similar instance already exists, and we want to override it
      * - for instance, when updating it.
      */
-    bool commitStagedInstance(const QString& keyPath, const InstanceTask& instanceTask, QString groupName);
+    // Files a commit put in an instance that the launcher just produced, so they can be shared
+    struct FreshFiles {
+        QString instanceId;
+        QString gameRoot;
+        QStringList files;
+    };
+    bool commitStagedInstance(const QString& keyPath, const InstanceTask& instanceTask, QString groupName, FreshFiles* fresh = nullptr);
 
     Qt::DropActions supportedDragActions() const override;
 
