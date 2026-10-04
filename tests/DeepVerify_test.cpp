@@ -366,6 +366,66 @@ class DeepVerifyTest : public QObject {
         QCOMPARE(readFile(path("a/resourcepacks/pack.zip")), "edited pack");
     }
 
+    void test_pendingLinkIsKeptByReconciliation()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("original pack");
+        QVERIFY(place(hash, "resourcepacks/pack.zip", "a", LinkKind::Symbolic));
+        const auto generation = currentGeneration(hash);
+        tamper(hash, "edited pack");
+        FS::Testing::setFaultHook(
+            [](FS::Testing::Operation operation, const QString&) { return operation == FS::Testing::Operation::SymbolicLink; });
+        deepVerify();
+        // the link still points at the canonical path, which is still the damaged file
+        QVERIFY(ObjectFiles::samePath(linkTarget("resourcepacks/pack.zip"), m_store->objectPath(hash)));
+
+        const auto verified = m_store->verify();
+        QVERIFY(verified);
+        QVERIFY(verified->replaced.isEmpty() && verified->missing.isEmpty());
+        for (int day = 1; day <= 3; day++) {
+            m_time += 2 * 24 * 60 * 60;
+            QVERIFY(m_store->reconcile({}));
+        }
+        QVERIFY(m_store->table().ref(key("resourcepacks/pack.zip")));
+        QVERIFY(QFileInfo::exists(retiredPath(hash, generation)));
+        QCOMPARE(readFile(path("a/resourcepacks/pack.zip")), "edited pack");
+
+        // once the link can be changed, it is pointed at the kept copy
+        FS::Testing::setFaultHook(nullptr);
+        deepVerify();
+        QVERIFY(ObjectFiles::samePath(linkTarget("resourcepacks/pack.zip"), retiredPath(hash, generation)));
+    }
+
+    void test_unreadableLinkBlocksTheIntactCopy()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        const auto hash = store("original pack");
+        QVERIFY(place(hash, "resourcepacks/pack.zip", "a", LinkKind::Symbolic));
+        tamper(hash, "edited pack");
+        FS::Testing::setFaultHook(
+            [](FS::Testing::Operation operation, const QString&) { return operation == FS::Testing::Operation::SymbolicLink; });
+        deepVerify();
+        FS::Testing::setFaultHook(nullptr);
+
+        QVERIFY(writeFile(path("downloads/again.zip"), "original pack"));
+
+        // the instance folder can't be read for a while, so its link can't be checked
+        const auto root = QFileInfo(path("a")).absoluteFilePath();
+        m_store->setUnreadableForTesting([root](const QString& candidate) { return candidate == root; });
+        QVERIFY(!m_store->ingest(path("downloads/again.zip"), ContentStore::IngestMode::Copy));
+        m_store->setUnreadableForTesting(nullptr);
+
+        // or is gone for a while, such as on a drive that was unplugged
+        QVERIFY(QFile::rename(path("a"), path("a-away")));
+        QVERIFY(!m_store->ingest(path("downloads/again.zip"), ContentStore::IngestMode::Copy));
+        QVERIFY(QFile::rename(path("a-away"), path("a")));
+        QCOMPARE(readFile(path("a/resourcepacks/pack.zip")), "edited pack");
+    }
+
     void test_twoSuccessiveDamages()
     {
         if (!m_canCreateSymbolicLinks) {

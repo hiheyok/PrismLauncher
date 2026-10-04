@@ -27,10 +27,20 @@ bool ContentStore::hasPendingRetargets(const QString& hash) const
     }
     for (auto it = m_table.refs().begin(); it != m_table.refs().end(); ++it) {
         const auto* generation = it->hash == hash && it->kind == LinkKind::Symbolic ? entry->generation(it->generation) : nullptr;
-        if (!generation || generation->retiredPath.isEmpty() || !m_table.owners().contains(it.key().owner)) {
+        if (!generation || generation->retiredPath.isEmpty()) {
             continue;
         }
-        const auto state = inspect(ownerPath(it.key()));
+        // Settled only if the link is verifiably there and doesn't point at the canonical path. A link that can't be
+        // checked, such as in an unreadable folder or one that is gone for now, may still point there; a link that is
+        // really gone stops counting once reconciliation releases it.
+        if (!m_table.owners().contains(it.key().owner)) {
+            return true;
+        }
+        const auto path = ownerPath(it.key());
+        if (presence(path, m_table.ownerVolume(it.key().owner)) != Presence::Present) {
+            return true;
+        }
+        const auto state = inspect(path);
         if (state.isSymbolicLink && ObjectFiles::samePath(state.target, objectPath(hash))) {
             return true;
         }

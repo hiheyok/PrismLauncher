@@ -75,7 +75,17 @@ bool ContentStore::holdsLink(const QString& path, const Ref& ref) const
     }
     const auto state = inspect(path);
     if (ref.kind == LinkKind::Symbolic) {
-        return state.isSymbolicLink && ObjectFiles::samePath(state.target, generationPath(ref.hash, *generation));
+        if (!state.isSymbolicLink) {
+            return false;
+        }
+        if (ObjectFiles::samePath(state.target, generationPath(ref.hash, *generation))) {
+            return true;
+        }
+        // A link to a damaged copy that couldn't be pointed at the kept copy yet still points at the canonical path,
+        // which holds the same damaged file until an intact copy is stored, and that waits for the link.
+        const auto canonical = FS::fileId(objectPath(ref.hash));
+        return !generation->retiredPath.isEmpty() && !entry->current && ObjectFiles::samePath(state.target, objectPath(ref.hash)) &&
+               canonical && generation->identity.sameFile(*canonical);
     }
     if (!state.exists || state.isSymbolicLink) {
         return false;
