@@ -199,11 +199,18 @@ void ExportPackDialog::done(int result)
         connect(task, &Task::failed, this,
                 [this](const QString reason) { CustomMessageBox::selectable(this, tr("Error"), reason, QMessageBox::Critical)->show(); });
         connect(task, &Task::finished, task, &Task::deleteLater);
+        // collected as they come, as the task deletes itself when it finishes
+        QStringList warnings;
+        connect(task, &Task::warningLogged, this, [&warnings](const QString& line) { warnings.append(line); });
 
         ProgressDialog progress(this);
         progress.showSkipButton();
         if (progress.execWithTask(task) != QDialog::Accepted)
             return;
+        if (!warnings.isEmpty()) {
+            // such as files left out because the file a link points to is gone
+            CustomMessageBox::selectable(this, tr("Exported with warnings"), warnings.join('\n'), QMessageBox::Warning)->exec();
+        }
     }
 
     QDialog::done(result);

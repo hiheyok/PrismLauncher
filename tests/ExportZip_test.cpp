@@ -42,6 +42,8 @@ class ExportZipTest : public QObject {
 
     QTemporaryDir m_dir{ QDir::current().filePath("export_zip_test_XXXXXX") };
 
+    QStringList m_signalledWarnings;
+
     QString path(const QString& name) const { return m_dir.filePath(name); }
 
     // Exports the instance folder and returns the task, after it finished
@@ -55,6 +57,9 @@ class ExportZipTest : public QObject {
             }
         }
         auto task = std::make_unique<MMCZip::ExportToZipTask>(path("export.zip"), path("instance"), files, "", true);
+        // the dialogs and pack exports collect them as they are logged
+        m_signalledWarnings.clear();
+        connect(task.get(), &Task::warningLogged, this, [this](const QString& line) { m_signalledWarnings.append(line); });
         QSignalSpy finished(task.get(), &Task::finished);
         task->start();
         if (finished.isEmpty()) {
@@ -104,12 +109,13 @@ class ExportZipTest : public QObject {
             }
         }
         const auto task = exportInstance();
-        // the export doesn't fail halfway, and says what it left out
+        // the export doesn't fail halfway, and says what it left out, as the export dialogs show
         QVERIFY2(task->wasSuccessful(), qPrintable(task->failReason()));
         const auto entries = readArchive(path("export.zip"));
         QVERIFY(!entries.contains("resourcepacks/gone.zip"));
         QVERIFY(entries.contains("mods/shared.jar"));
         QVERIFY(task->warnings().join('\n').contains("resourcepacks/gone.zip"));
+        QVERIFY(m_signalledWarnings.join('\n').contains("resourcepacks/gone.zip"));
         QFile::remove(path("instance/resourcepacks/gone.zip"));
     }
 };

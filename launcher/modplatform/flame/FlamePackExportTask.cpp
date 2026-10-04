@@ -363,6 +363,8 @@ void FlamePackExportTask::buildZip()
         stepProgress(*progressStep);
     });
 
+    // such as files left out of the archive
+    connect(zipTask.get(), &Task::warningLogged, this, [this](const QString& line) { logWarning(line); });
     connect(zipTask.get(), &Task::succeeded, this, &FlamePackExportTask::emitSucceeded);
     connect(zipTask.get(), &Task::aborted, this, &FlamePackExportTask::emitAborted);
     connect(zipTask.get(), &Task::failed, this, [this, progressStep](QString reason) {
