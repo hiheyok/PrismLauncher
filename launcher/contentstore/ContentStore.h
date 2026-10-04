@@ -4,7 +4,9 @@
 #include <QJsonObject>
 #include <QList>
 #include <QMutex>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 
 #include <cstdint>
 #include <functional>
@@ -139,6 +141,36 @@ class ContentStore {
     // a batch, so the user is asked once. Returns the result of each link.
     using PrivilegedLinker = std::function<QList<Result<>>(const QList<std::pair<QString, QString>>& links)>;
 
+    struct VerifyReport {
+        int checked = 0;
+        QList<RefKey> missing;
+        QList<RefKey> replaced;
+        // couldn't be checked, such as on a drive that isn't connected
+        QList<RefKey> unknown;
+        // stored files with more hard links than recorded, which only reconciliation can find
+        QStringList unrecordedLinks;
+    };
+
+    struct ReconcileOptions {
+        // the owners of this launcher that still exist, such as the instances in the instance list. Links of other
+        // owners whose folder is definitely gone are released.
+        QSet<QString> knownOwners;
+    };
+
+    struct ReconcileReport {
+        // every folder could be read, so missing links count towards releasing them
+        bool complete = false;
+        // folders that couldn't be read
+        QStringList uncertain;
+        int moved = 0;
+        int adopted = 0;
+        int released = 0;
+        int adoptedFiles = 0;
+        int destroyed = 0;
+        // files in the store that don't match their name, kept for a person to look at
+        QStringList damagedFiles;
+    };
+
     // Points in a placement after which a test can stop it, as if the launcher crashed there
     enum class PlacementStep : std::uint8_t {
         Begun,
@@ -188,6 +220,24 @@ class ContentStore {
     // anything if the path doesn't hold the recorded link.
     Result<UnshareResult> unshare(const RefKey& key);
 
+    // Checks that every link of this launcher is still where it was recorded, and records which ones aren't. Only looks
+    // at the recorded paths, and never releases or destroys anything.
+    Result<VerifyReport> verify();
+
+    // Scans the folders of this launcher's owners: follows links that were moved, records links nobody recorded,
+    // releases links that two complete scans at least a day apart found gone, and destroys stored files nothing uses.
+    Result<ReconcileReport> reconcile(const ReconcileOptions& options);
+
+    // Destroys the stored files that nothing uses, when that is certain. Returns how many were destroyed.
+    Result<int> destroyUnused();
+
+    // A hint that the file at key was removed, such as from a folder watcher. Marks its link missing if it is gone.
+    void noteRemoved(const RefKey& key);
+
+    // How long a link must be found gone before it is released, and how old a found file must be before it is destroyed
+    static constexpr qint64 LossGraceSeconds = qint64(24) * 60 * 60;
+    static constexpr qint64 OrphanAgeSeconds = qint64(14) * 24 * 60 * 60;
+
     // Records that the link at from was renamed to newRelativePath in the same owner, such as when a mod is disabled.
     // Does nothing if from isn't a recorded link.
     Result<> renameRef(const RefKey& from, const QString& newRelativePath);
@@ -202,6 +252,10 @@ class ContentStore {
     static PrivilegedLinker defaultPrivilegedLinker();
 
     void setInterruptionForTesting(std::function<bool(PlacementStep)> interruption) { m_interruption = std::move(interruption); }
+    // seconds since the epoch, for tests that need time to pass
+    void setClockForTesting(std::function<qint64()> clock) { m_clock = std::move(clock); }
+    // paths for which reading fails, as on a drive that isn't connected or a folder without permission
+    void setUnreadableForTesting(std::function<bool(const QString&)> unreadable) { m_unreadable = std::move(unreadable); }
 
     Lease lease(const QString& hash);
     int leaseCount(const QString& hash) const;
@@ -234,6 +288,24 @@ class ContentStore {
     // changed by something else stays marked for hashing.
     std::optional<QJsonObject> recaptureIdentity(const QString& hash, int generation, bool matchedBefore) const;
     bool interrupted(PlacementStep step) const { return m_interruption && m_interruption(step); }
+    qint64 now() const;
+
+    enum class Presence : std::uint8_t { Present, Absent, Uncertain };
+    // Whether a path definitely exists or definitely doesn't. Absence is only certain when the nearest existing folder
+    // can be read and is on the expected volume, so a drive that isn't connected is uncertain.
+    Presence presence(const QString& path, const QString& volume) const;
+    QString ownerPath(const RefKey& key) const;
+    bool isOwnOwner(const QString& owner) const;
+
+    Result<VerifyReport> verifyLocked();
+    Result<int> destroyUnusedLocked(const QSet<QString>& hashes = {});
+    // Marks unused files as orphans, then destroys those it can. For after links were removed.
+    Result<> releaseLocked(const QSet<QString>& hashes);
+    // The hashes that refs or open placements use
+    QSet<QString> usedHashes() const;
+    bool canDestroy(const StoreEntry& entry, const QSet<QString>& used) const;
+    // Finishes or abandons destructions a crash interrupted
+    Result<> finishDestructionsLocked();
 
     QString m_storeDir;
     QString m_dataDir;
@@ -250,4 +322,6 @@ class ContentStore {
     LinkMode m_linkMode = LinkMode::Auto;
     PrivilegedLinker m_privilegedLinker;
     std::function<bool(PlacementStep)> m_interruption;
+    std::function<qint64()> m_clock;
+    std::function<bool(const QString&)> m_unreadable;
 };

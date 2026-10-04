@@ -21,6 +21,9 @@ ecm_add_test(Ingest_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}
 ecm_add_test(Placement_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME Placement)
 
+ecm_add_test(Reconcile_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+    TEST_NAME Reconcile)
+
 ecm_add_test(GZip_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME GZip)
 

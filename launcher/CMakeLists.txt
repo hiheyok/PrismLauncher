@@ -78,6 +78,7 @@ set(CORE_SOURCES
     contentstore/ObjectFiles.h
     contentstore/ObjectFiles.cpp
     contentstore/Placement.cpp
+    contentstore/Reconcile.cpp
     contentstore/Journal.h
     contentstore/Journal.cpp
     contentstore/Recovery.h
@@ -88,6 +89,8 @@ set(CORE_SOURCES
     contentstore/StoreFormat.cpp
     contentstore/StoreLock.h
     contentstore/StoreLock.cpp
+    contentstore/StoreTasks.h
+    contentstore/StoreTasks.cpp
     contentstore/SymlinkAllowList.h
     contentstore/SymlinkAllowList.cpp
 

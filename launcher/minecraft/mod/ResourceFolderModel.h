@@ -54,6 +54,8 @@ class QSortFilterProxyModel;
  *
  *  TODO: Make the resources unique pointers accessible through weak pointers.
  */
+class ContentStore;
+
 class ResourceFolderModel : public QAbstractListModel {
     Q_OBJECT
    public:
@@ -284,6 +286,10 @@ class ResourceFolderModel : public QAbstractListModel {
     std::atomic<int> m_nextResolutionTicket = 0;
 
    private:
+    // the shared store, if this model belongs to an instance and the store can be changed
+    ContentStore* sharedStore() const;
     // Keeps the shared store's record of a linked file when it is renamed, such as when it is disabled
     void renameSharedFile(const QString& from, const QString& to) const;
+    // Tells the shared store that a file disappeared from the folder, so it can mark its link missing
+    void noteSharedFileRemoved(const QString& path) const;
 };
