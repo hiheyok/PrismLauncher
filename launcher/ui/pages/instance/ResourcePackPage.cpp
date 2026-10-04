@@ -72,6 +72,9 @@ ResourcePackPage::ResourcePackPage(MinecraftInstance* instance, ResourcePackFold
 
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionChangeVersion, m_ui->actionLockUpdates);
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionLockUpdates, m_ui->actionUnlockUpdates);
+    m_ui->actionsToolbar->insertActionAfter(m_ui->actionUnlockUpdates, m_ui->actionKeepLocal);
+    m_ui->actionsToolbar->insertActionAfter(m_ui->actionKeepLocal, m_ui->actionRevertToShared);
+    m_ui->actionsToolbar->insertActionAfter(m_ui->actionRevertToShared, m_ui->actionRestoreOriginal);
 }
 
 void ResourcePackPage::updateFrame(const QModelIndex& current, [[maybe_unused]] const QModelIndex& previous)

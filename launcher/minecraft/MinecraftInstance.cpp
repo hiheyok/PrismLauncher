@@ -194,6 +194,10 @@ void MinecraftInstance::loadSpecificSettings()
 
     // Shared content store: files kept local, by their path in the game folder without ".disabled"
     m_settings->registerSetting("SharedStoreExcluded", QStringList());
+    // which stored file each file kept local was copied from, as JSON
+    m_settings->registerSetting("SharedStoreUnsharedFrom", QString());
+    // whether this instance shares its files at all
+    m_settings->registerSetting("SharedStoreInstanceShares", true);
 
     if (auto global_settings = globalSettings()) {
         m_settings->registerOverride(global_settings->getSetting("JavaPath"), locationOverride);

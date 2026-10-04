@@ -72,6 +72,7 @@ class TranslationsModel;
 class ITheme;
 class ThemeManager;
 class ContentStore;
+class Task;
 class IconTheme;
 class BaseInstance;
 class MinecraftInstance;
@@ -267,6 +268,8 @@ class Application : public QApplication {
     QSet<QString> m_features;
     std::unique_ptr<ThemeManager> m_themeManager;
     std::unique_ptr<ContentStore> m_contentStore;
+    // declared after the store, so it finishes before the store closes
+    shared_qobject_ptr<Task> m_contentStoreTask;
 
     QMap<QString, std::shared_ptr<BaseProfilerFactory>> m_profilers;
 

@@ -73,6 +73,7 @@ class ModFolderModel : public ResourceFolderModel {
         RequiresColumn,
         RequiredByColumn,
         FileNameColumn,
+        SharedColumn,
         LockUpdateColumn,
         NumColumns
     };

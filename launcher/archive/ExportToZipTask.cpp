@@ -24,6 +24,14 @@
 namespace MMCZip {
 void ExportToZipTask::executeTask()
 {
+    // links whose target is gone are left out, and listed, instead of failing the export halfway
+    if (m_followSymlinks) {
+        for (const auto& file : m_files) {
+            if (file.isSymLink() && !QFileInfo::exists(file.symLinkTarget())) {
+                emit logWarning(tr("Left out %1: the file it links to doesn't exist").arg(m_dir.relativeFilePath(file.absoluteFilePath())));
+            }
+        }
+    }
     setStatus("Adding files...");
     setProgress(0, m_files.length());
     m_buildZipFuture = QtConcurrent::run(QThreadPool::globalInstance(), [this]() { return exportZip(); });
@@ -56,11 +64,20 @@ auto ExportToZipTask::exportZip() -> ZipResult
         auto relative = m_dir.relativeFilePath(absolute);
         setStatus("Compressing: " + relative);
         setProgress(m_progress + 1, m_progressTotal);
+        // the launcher's temporary files, such as from a placement in progress
+        if (file.fileName().startsWith(".prism-")) {
+            continue;
+        }
         if (m_followSymlinks) {
-            if (file.isSymLink())
+            if (file.isSymLink()) {
                 absolute = file.symLinkTarget();
-            else
+                // checked before the archive was started, and left out
+                if (!QFileInfo::exists(absolute)) {
+                    continue;
+                }
+            } else {
                 absolute = file.canonicalFilePath();
+            }
         }
 
         if (!m_excludeFiles.contains(relative) && !m_output.addFile(absolute, m_destinationPrefix + relative)) {

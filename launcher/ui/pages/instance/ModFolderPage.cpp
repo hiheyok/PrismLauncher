@@ -127,6 +127,9 @@ ModFolderPage::ModFolderPage(MinecraftInstance* inst, ModFolderModel* model, QWi
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionViewFolder, m_ui->actionViewConfigs);
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionChangeVersion, m_ui->actionLockUpdates);
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionLockUpdates, m_ui->actionUnlockUpdates);
+    m_ui->actionsToolbar->insertActionAfter(m_ui->actionUnlockUpdates, m_ui->actionKeepLocal);
+    m_ui->actionsToolbar->insertActionAfter(m_ui->actionKeepLocal, m_ui->actionRevertToShared);
+    m_ui->actionsToolbar->insertActionAfter(m_ui->actionRevertToShared, m_ui->actionRestoreOriginal);
 }
 
 bool ModFolderPage::shouldDisplay() const

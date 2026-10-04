@@ -234,6 +234,30 @@
     <string>Unlock the resource to allow it to be updated</string>
    </property>
   </action>
+  <action name="actionKeepLocal">
+   <property name="text">
+    <string>Keep Local Copy</string>
+   </property>
+   <property name="toolTip">
+    <string>Make the selected files local copies, so editing them only changes this instance</string>
+   </property>
+  </action>
+  <action name="actionRevertToShared">
+   <property name="text">
+    <string>Revert to Shared Version</string>
+   </property>
+   <property name="toolTip">
+    <string>Replace the selected local copies with the shared versions they were copied from, discarding local changes</string>
+   </property>
+  </action>
+  <action name="actionRestoreOriginal">
+   <property name="text">
+    <string>Restore Original</string>
+   </property>
+   <property name="toolTip">
+    <string>Replace the selected damaged copies with the intact shared files</string>
+   </property>
+  </action>
  </widget>
  <customwidgets>
   <customwidget>

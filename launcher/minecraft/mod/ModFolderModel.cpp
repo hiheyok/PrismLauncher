@@ -63,18 +63,19 @@ ModFolderModel::ModFolderModel(const QDir& dir, MinecraftInstance* instance, boo
     : ResourceFolderModel(QDir(dir), instance, isIndexed, createDir, parent)
 {
     m_columnNames = QStringList({ "Enable", "Image", "Name", "Version", "Last Modified", "Provider", "Size", "Side", "Loaders",
-                                  "Minecraft Versions", "Release Type", "Requires", "Required By", "File Name", "Update" });
+                                  "Minecraft Versions", "Release Type", "Requires", "Required By", "File Name", "Shared", "Update" });
     m_columnNamesTranslated = QStringList({ tr("Enable"), tr("Image"), tr("Name"), tr("Version"), tr("Last Modified"), tr("Provider"),
                                             tr("Size"), tr("Side"), tr("Loaders"), tr("Minecraft Versions"), tr("Release Type"),
-                                            tr("Requires"), tr("Required By"), tr("File Name"), tr("Update") });
-    m_columnSortKeys = { SortType::Enabled,     SortType::Name,     SortType::Name,       SortType::Version,  SortType::Date,
-                         SortType::Provider,    SortType::Size,     SortType::Side,       SortType::Loaders,  SortType::McVersions,
-                         SortType::ReleaseType, SortType::Requires, SortType::RequiredBy, SortType::Filename, SortType::LockUpdate };
+                                            tr("Requires"), tr("Required By"), tr("File Name"), tr("Shared"), tr("Update") });
+    m_columnSortKeys = { SortType::Enabled,    SortType::Name,       SortType::Name,        SortType::Version,
+                         SortType::Date,       SortType::Provider,   SortType::Size,        SortType::Side,
+                         SortType::Loaders,    SortType::McVersions, SortType::ReleaseType, SortType::Requires,
+                         SortType::RequiredBy, SortType::Filename,   SortType::Filename,    SortType::LockUpdate };
     m_columnResizeModes = { QHeaderView::Interactive,      QHeaderView::Interactive, QHeaderView::Stretch,     QHeaderView::Interactive,
                             QHeaderView::ResizeToContents, QHeaderView::Interactive, QHeaderView::Interactive, QHeaderView::Interactive,
                             QHeaderView::Interactive,      QHeaderView::Interactive, QHeaderView::Interactive, QHeaderView::Interactive,
-                            QHeaderView::Interactive,      QHeaderView::Interactive, QHeaderView::Interactive };
-    m_columnsHideable = { false, true, false, true, true, true, true, true, true, true, true, true, true, true, true };
+                            QHeaderView::Interactive,      QHeaderView::Interactive, QHeaderView::Interactive, QHeaderView::Interactive };
+    m_columnsHideable = { false, true, false, true, true, true, true, true, true, true, true, true, true, true, true, true };
 
     m_dir.setFilter(QDir::Readable | QDir::NoDotAndDotDot | QDir::Files);
 
@@ -191,6 +192,9 @@ QVariant ModFolderModel::data(const QModelIndex& index, int role) const
         case FileNameColumn:
             mappedIndex = index.siblingAtColumn(ResourceFolderModel::FileNameColumn);
             break;
+        case SharedColumn:
+            mappedIndex = index.siblingAtColumn(ResourceFolderModel::SharedColumn);
+            break;
         default:
             break;
     }
@@ -221,6 +225,7 @@ QVariant ModFolderModel::headerData(int section, [[maybe_unused]] Qt::Orientatio
                 case RequiredByColumn:
                 case RequiresColumn:
                 case FileNameColumn:
+                case SharedColumn:
                 case LockUpdateColumn:
                     return columnNames().at(section);
                 default:
@@ -255,6 +260,8 @@ QVariant ModFolderModel::headerData(int section, [[maybe_unused]] Qt::Orientatio
                     return tr("For each mod, the number of other mods it depends on.");
                 case FileNameColumn:
                     return tr("The file name of the mod.");
+                case SharedColumn:
+                    return tr("Whether the file is shared with other instances, kept as a local copy, or a damaged shared copy.");
                 case LockUpdateColumn:
                     return tr("Should this mod be updated?");
                 default:

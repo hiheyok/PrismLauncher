@@ -126,6 +126,25 @@ ExternalResourcesPage::ExternalResourcesPage(MinecraftInstance* instance, Resour
 
     connect(m_ui->actionLockUpdates, &QAction::triggered, this, &ExternalResourcesPage::lockUpdates);
     connect(m_ui->actionUnlockUpdates, &QAction::triggered, this, &ExternalResourcesPage::unlockUpdates);
+    connect(m_ui->actionKeepLocal, &QAction::triggered, this, &ExternalResourcesPage::keepLocal);
+    connect(m_ui->actionRevertToShared, &QAction::triggered, this, &ExternalResourcesPage::revertToShared);
+    connect(m_ui->actionRestoreOriginal, &QAction::triggered, this, &ExternalResourcesPage::restoreOriginal);
+    // whether this instance shares its files at all, while the launcher shares files
+    if (APPLICATION->contentStore() != nullptr && m_instance != nullptr) {
+        auto* shareAction = new QAction(tr("Share Files of This Instance"), this);
+        shareAction->setCheckable(true);
+        shareAction->setChecked(SharedContent::instanceShares(m_instance));
+        shareAction->setToolTip(
+            tr("Share new and updated files of this instance with other instances. Files already shared stay "
+               "shared until you keep them as local copies."));
+        connect(shareAction, &QAction::toggled, this, [this](bool shares) {
+            SharedContent::setInstanceShares(m_instance, shares);
+            updateSharingActions();
+            m_model->update();
+        });
+        m_ui->actionsToolbar->addAction(shareAction);
+    }
+    updateSharingActions();
 
     auto* selectionModel = m_ui->treeView->selectionModel();
 
@@ -386,6 +405,13 @@ void ExternalResourcesPage::updateActions()
 
     m_ui->actionLockUpdates->setEnabled(hasUpdatesUnlocked);
     m_ui->actionUnlockUpdates->setEnabled(hasUpdatesLocked);
+
+    const auto anySelected = [&](bool (ResourceFolderModel::*can)(const QModelIndex&) const) {
+        return std::ranges::any_of(selection, [&](const QModelIndex& index) { return index.column() == 0 && (m_model->*can)(index); });
+    };
+    m_ui->actionKeepLocal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canKeepLocal));
+    m_ui->actionRevertToShared->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRevertToShared));
+    m_ui->actionRestoreOriginal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRestoreOriginal));
     m_ui->actionExportMetadata->setEnabled(!m_model->empty());
 }
 
@@ -428,5 +454,63 @@ void ExternalResourcesPage::unlockUpdates()
 {
     auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection());
     m_model->setUpdateLock(selection.indexes(), EnableAction::DISABLE);
+    updateActions();
+}
+
+void ExternalResourcesPage::updateSharingActions()
+{
+    // the sharing actions only exist while this instance's files are shared
+    const bool sharing = SharedContent::storeFor(m_instance) != nullptr;
+    for (auto* action : { m_ui->actionKeepLocal, m_ui->actionRevertToShared, m_ui->actionRestoreOriginal }) {
+        action->setVisible(sharing);
+    }
+}
+
+void ExternalResourcesPage::keepLocal()
+{
+    const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
+    if (const auto errors = m_model->keepLocal(selection); !errors.isEmpty()) {
+        CustomMessageBox::selectable(this, tr("Could not keep local copies"), errors.join('\n'), QMessageBox::Warning)->show();
+    }
+    updateActions();
+}
+
+void ExternalResourcesPage::revertToShared()
+{
+    const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
+    QModelIndexList reverting;
+    QStringList names;
+    for (const auto& index : selection) {
+        if (index.column() == 0 && m_model->canRevertToShared(index)) {
+            reverting.append(index);
+            names.append(m_model->at(index.row()).fileinfo().fileName());
+        }
+    }
+    if (reverting.isEmpty()) {
+        return;
+    }
+    // what is discarded is the files as they are when the user confirms
+    const auto identities = m_model->fileIdentities(reverting);
+    const auto response =
+        CustomMessageBox::selectable(
+            this, tr("Revert to shared version"),
+            tr("Your local changes to these files will be discarded:\n%1\n\nDo you want to continue?").arg(names.join('\n')),
+            QMessageBox::Warning, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+            ->exec();
+    if (response != QMessageBox::Yes) {
+        return;
+    }
+    if (const auto errors = m_model->revertToShared(reverting, identities); !errors.isEmpty()) {
+        CustomMessageBox::selectable(this, tr("Could not revert to the shared versions"), errors.join('\n'), QMessageBox::Warning)->show();
+    }
+    updateActions();
+}
+
+void ExternalResourcesPage::restoreOriginal()
+{
+    const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
+    if (const auto errors = m_model->restoreOriginal(selection); !errors.isEmpty()) {
+        CustomMessageBox::selectable(this, tr("Could not restore the original files"), errors.join('\n'), QMessageBox::Warning)->show();
+    }
     updateActions();
 }

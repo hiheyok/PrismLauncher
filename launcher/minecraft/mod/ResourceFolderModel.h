@@ -7,8 +7,10 @@
 #include <QThread>
 #include <QTreeView>
 
+#include "FileSystemPrimitives.h"
 #include "Resource.h"
 #include "contentstore/ContentStore.h"
+#include "contentstore/SharedContent.h"
 
 #include "tasks/ConcurrentTask.h"
 #include "tasks/Task.h"
@@ -142,6 +144,7 @@ class ResourceFolderModel : public QAbstractListModel {
         ProviderColumn,
         SizeColumn,
         FileNameColumn,
+        SharedColumn,
         LockUpdateColumn,
         NumColumns
     };
@@ -193,6 +196,21 @@ class ResourceFolderModel : public QAbstractListModel {
     MinecraftInstance* instance() const { return m_instance; }
 
     bool setUpdateLock(const QModelIndexList& indexes, EnableAction action);
+
+    // How the resource relates to the shared store
+    SharedContent::FileState sharedState(int row) const;
+    // "Keep local copy" applies to shared, damaged and local files that aren't kept local yet
+    bool canKeepLocal(const QModelIndex& index) const;
+    // "Revert to shared version" applies to files kept local whose shared version is still stored
+    bool canRevertToShared(const QModelIndex& index) const;
+    // "Restore original" applies to links to a damaged copy, once an intact copy is stored
+    bool canRestoreOriginal(const QModelIndex& index) const;
+    // Each returns the errors, if any
+    QStringList keepLocal(const QModelIndexList& indexes);
+    // identities are the files the user confirmed discarding, by path, from fileIdentities
+    QStringList revertToShared(const QModelIndexList& indexes, const QMap<QString, FS::FileIdentity>& identities);
+    QStringList restoreOriginal(const QModelIndexList& indexes);
+    QMap<QString, FS::FileIdentity> fileIdentities(const QModelIndexList& indexes) const;
 
    signals:
     void updateFinished();
@@ -249,16 +267,17 @@ class ResourceFolderModel : public QAbstractListModel {
    protected:
     // Represents the relationship between a column's index (represented by the list index), and it's sorting key.
     // As such, the order in with they appear is very important!
-    QList<SortType> m_columnSortKeys = { SortType::Enabled,  SortType::Name, SortType::Version,  SortType::Date,
-                                         SortType::Provider, SortType::Size, SortType::Filename, SortType::LockUpdate };
-    QStringList m_columnNames = { "Enable", "Name", "Version", "Last Modified", "Provider", "Size", "File Name", "Update" };
-    QStringList m_columnNamesTranslated = { tr("Enable"),   tr("Name"), tr("Version"),   tr("Last Modified"),
-                                            tr("Provider"), tr("Size"), tr("File Name"), tr("Update") };
+    QList<SortType> m_columnSortKeys = { SortType::Enabled, SortType::Name,     SortType::Version,  SortType::Date,      SortType::Provider,
+                                         SortType::Size,    SortType::Filename, SortType::Filename, SortType::LockUpdate };
+    QStringList m_columnNames = { "Enable", "Name", "Version", "Last Modified", "Provider", "Size", "File Name", "Shared", "Update" };
+    QStringList m_columnNamesTranslated = { tr("Enable"), tr("Name"),      tr("Version"), tr("Last Modified"), tr("Provider"),
+                                            tr("Size"),   tr("File Name"), tr("Shared"),  tr("Update") };
     QList<QHeaderView::ResizeMode> m_columnResizeModes = { QHeaderView::Interactive, QHeaderView::Stretch,
                                                            QHeaderView::Interactive, QHeaderView::ResizeToContents,
                                                            QHeaderView::Interactive, QHeaderView::Interactive,
-                                                           QHeaderView::Interactive, QHeaderView::Interactive };
-    QList<bool> m_columnsHideable = { false, false, true, true, true, true, true, true };
+                                                           QHeaderView::Interactive, QHeaderView::Interactive,
+                                                           QHeaderView::Interactive };
+    QList<bool> m_columnsHideable = { false, false, true, true, true, true, true, true, true };
 
     QDir m_dir;
     MinecraftInstance* m_instance;
