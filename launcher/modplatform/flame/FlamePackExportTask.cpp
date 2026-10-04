@@ -91,6 +91,10 @@ void FlamePackExportTask::collectHashes()
     ConcurrentTask::Ptr hashingTask(new ConcurrentTask("MakeHashesTask", APPLICATION->settings()->get("NumberOfConcurrentTasks").toInt()));
     task.reset(hashingTask);
     for (const QFileInfo& file : m_files) {
+        // a link whose target is gone has nothing to hash; the archive leaves it out and says so
+        if (file.isSymbolicLink() && !file.exists()) {
+            continue;
+        }
         const QString relative = m_gameRoot.relativeFilePath(file.absoluteFilePath());
         // require sensible file types
         if (!std::any_of(FILE_EXTENSIONS.begin(), FILE_EXTENSIONS.end(), [&relative](const QString& extension) {
