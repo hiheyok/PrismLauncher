@@ -171,6 +171,33 @@ class ContentStore {
         QStringList damagedFiles;
     };
 
+    // A link that uses a damaged copy of a file, until the user chooses how to repair it
+    struct AffectedFile {
+        RefKey key;
+        QString hash;
+        int generation = 0;
+        LinkKind kind = LinkKind::Hard;
+
+        bool operator==(const AffectedFile&) const = default;
+    };
+
+    struct DeepVerifyReport {
+        int checked = 0;
+        // stored files found damaged by this check, now kept aside for the links that use them
+        QStringList damaged;
+        QStringList missing;
+        QStringList unreadable;
+        // every link that uses a damaged copy, including ones found by earlier checks
+        QList<AffectedFile> affected;
+    };
+
+    struct RepairReport {
+        // symbolic links pointed back at their stored file
+        int retargeted = 0;
+        // links whose stored file is gone
+        QList<RefKey> lost;
+    };
+
     // Points in a placement after which a test can stop it, as if the launcher crashed there
     enum class PlacementStep : std::uint8_t {
         Begun,
@@ -230,6 +257,18 @@ class ContentStore {
 
     // Destroys the stored files that nothing uses, when that is certain. Returns how many were destroyed.
     Result<int> destroyUnused();
+
+    // Hashes every stored file. A damaged one is kept aside, with the links that use it, so no link changes which bytes
+    // it shows until its user chooses a repair; symbolic links are pointed at the kept copy before an intact copy of the
+    // file can be stored again.
+    Result<DeepVerifyReport> deepVerify();
+
+    // Points symbolic links whose target is gone, such as after the store moved, back at their stored file
+    Result<RepairReport> repairSymbolicLinks();
+
+    // "Restore original": replaces a link to a damaged copy with a link to the intact copy. "Keep this version locally"
+    // is unshare, which keeps the bytes the instance sees.
+    Result<PlacementKind> restoreOriginal(const RefKey& key);
 
     // A hint that the file at key was removed, such as from a folder watcher. Marks its link missing if it is gone.
     void noteRemoved(const RefKey& key);
@@ -304,6 +343,22 @@ class ContentStore {
     // The hashes that refs or open placements use
     QSet<QString> usedHashes() const;
     bool canDestroy(const StoreEntry& entry, const QSet<QString>& used) const;
+    bool canDestroyGeneration(const StoreEntry& entry, const Generation& generation, const QSet<QString>& changing) const;
+    // Destroys a generation's file, and the canonical file too when it is the same damaged file
+    Result<bool> destroyGenerationLocked(const StoreEntry& entry, const Generation& generation);
+    // Records retired generations of the hashes (all when empty) that no link uses anymore
+    Result<> markUnusedGenerationsLocked(const QSet<QString>& hashes);
+    // Whether every launcher scanned completely since the time, and none's latest scan was incomplete
+    bool everyoneScannedSince(qint64 since) const;
+
+    Result<> retireLocked(const QString& hash);
+    // Points the symbolic links that use a retired generation of hash, but still point at its canonical path, at the
+    // retired copy
+    Result<> finishRetargetsLocked(const QString& hash);
+    // Whether a symbolic link to a retired generation of hash still points at the canonical path
+    bool hasPendingRetargets(const QString& hash) const;
+    // Replaces the symbolic link at key with one to target, as a placement of the generation
+    Result<> retargetLocked(const RefKey& key, const Ref& ref, int generation, const QString& target);
     // Finishes or abandons destructions a crash interrupted
     Result<> finishDestructionsLocked();
 

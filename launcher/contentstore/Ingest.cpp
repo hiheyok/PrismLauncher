@@ -217,6 +217,10 @@ Result<ContentStore::IngestResult> ContentStore::publishLocked(const QString& ca
     };
 
     const auto entry = m_table.entries().find(hash);
+    if (entry != m_table.entries().end() && !entry->current && hasPendingRetargets(hash)) {
+        // they would see the intact bytes instead of the damaged ones their user hasn't chosen to replace yet
+        return std::unexpected(QString("Links to the damaged copy of %1 must be pointed at the kept copy first").arg(hash));
+    }
     if (entry != m_table.entries().end() && entry->current) {
         auto current = FS::identity(path);
         if (current && StoredIdentity::from(*current) == entry->current->identity) {

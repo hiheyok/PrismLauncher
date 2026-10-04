@@ -24,6 +24,23 @@ class VerifyStoreTask : public Task {
     QFutureWatcher<Result<ContentStore::VerifyReport>> m_watcher;
 };
 
+// Hashes every stored file in the background, see ContentStore::deepVerify
+class DeepVerifyStoreTask : public Task {
+    Q_OBJECT
+   public:
+    explicit DeepVerifyStoreTask(ContentStore* store) : m_store(store) {}
+
+    const std::optional<ContentStore::DeepVerifyReport>& report() const { return m_report; }
+
+   protected:
+    void executeTask() override;
+
+   private:
+    ContentStore* m_store;
+    std::optional<ContentStore::DeepVerifyReport> m_report;
+    QFutureWatcher<Result<ContentStore::DeepVerifyReport>> m_watcher;
+};
+
 // Scans the folders of this launcher's owners in the background, see ContentStore::reconcile
 class ReconcileStoreTask : public Task {
     Q_OBJECT
