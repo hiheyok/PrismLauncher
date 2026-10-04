@@ -218,6 +218,12 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
         // the user's file became the stored file, read-only like every stored file: linking it records the link
         guard.dismiss();
         TRY_INTO(const auto identity, FS::identity(path))
+        // Only the file that became the stored file may be linked in place of itself. Another file at the path, such as
+        // an editor saving by renaming, is left alone: the stored file stays, and nothing records a link to it.
+        if (identity.fileId != before.fileId) {
+            finish("completed");
+            return std::unexpected(QString("%1 was replaced while it was being shared").arg(path));
+        }
         auto placed = placeAt({ destination, hash, identity });
         finish("completed");
         if (!placed) {

@@ -268,6 +268,27 @@ class ConvertTest : public QObject {
         QVERIFY(m_store->table().freezes().isEmpty());
     }
 
+    void test_fileReplacedAfterItWasStored()
+    {
+        QVERIFY(writeFile(file("mods/mod.jar"), "original"));
+        const auto target = file("mods/mod.jar");
+        // an editor saves by renaming its new file over the path once the old one became the stored file
+        m_store->setInterruptionForTesting([this, &target](Step step) {
+            if (step == Step::Ingested) {
+                writeFile(path("elsewhere/saved.tmp"), "new editor contents");
+                FS::replaceFile(path("elsewhere/saved.tmp"), target);
+            }
+            return false;
+        });
+        QVERIFY(!m_store->convert(destination("mods/mod.jar")));
+        m_store->setInterruptionForTesting(nullptr);
+        // the editor's file is kept, writable and unlinked
+        QCOMPARE(readFile(target), "new editor contents");
+        QVERIFY(QFileInfo(target).isWritable());
+        QVERIFY(!m_store->table().ref(destination("mods/mod.jar").key()));
+        QVERIFY(m_store->table().freezes().isEmpty());
+    }
+
 #if defined(Q_OS_WIN)
     void test_noWriterDuringTheConversion()
     {
