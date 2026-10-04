@@ -18,8 +18,13 @@ namespace SharedContent {
 // The store, if sharing is on and this launcher can change the store
 ContentStore* store();
 
-// The store to share an instance's files through: store(), unless the instance doesn't share its files
+// The store to share an instance's new files through: store(), unless the instance doesn't share its files
 ContentStore* storeFor(BaseInstance* instance);
+
+// The store that keeps the records of an instance's existing links: store(), even when the instance doesn't share new
+// files. Removing, renaming and keeping local copies of linked files must go through it, so a trashed symbolic link is
+// never left pointing at a file the store may destroy.
+ContentStore* linkedStoreFor(BaseInstance* instance);
 
 // Whether the instance's files are shared, as the instance setting says
 bool instanceShares(BaseInstance* instance);

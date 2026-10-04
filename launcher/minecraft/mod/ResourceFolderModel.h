@@ -304,7 +304,7 @@ class ResourceFolderModel : public QAbstractListModel {
     std::atomic<int> m_nextResolutionTicket = 0;
 
    private:
-    // the shared store, if this model belongs to an instance and the store can be changed
+    // the shared store keeping the records of this instance's links, if the store can be changed
     ContentStore* sharedStore() const;
     QString gameRelativePath(const QString& path) const;
     // where a file of this folder is, for the shared store; only with a shared store

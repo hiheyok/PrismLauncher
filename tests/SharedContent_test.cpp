@@ -550,6 +550,32 @@ class SharedContentTest : public QObject {
         SharedContent::setStoreForTesting(nullptr);
     }
 
+    void test_optedOutInstanceKeepsItsLinksRight()
+    {
+        if (!m_canCreateSymbolicLinks) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        auto instance = makeInstance("a");
+        SharedContent::setStoreForTesting(m_store.get());
+        const auto hash = place("a", "resourcepacks/pack.zip", "pack", LinkKind::Symbolic);
+        SharedContent::setInstanceShares(instance.get(), false);
+
+        // no new links, but the existing ones are still looked after
+        QVERIFY(!SharedContent::storeFor(instance.get()));
+        auto* linked = SharedContent::linkedStoreFor(instance.get());
+        QCOMPARE(linked, m_store.get());
+        QCOMPARE(stateOf(instance.get(), "resourcepacks/pack.zip"), SharedContent::FileState::Shared);
+
+        // trashing the link turns it into a copy first, so it outlives the stored file
+        QVERIFY(SharedContent::removeFile(*linked, key("a", "resourcepacks/pack.zip"),
+                                          [this] { return FS::move(file("a", "resourcepacks/pack.zip"), path("trash/pack.zip")); }));
+        m_time += 1;
+        QVERIFY(m_store->reconcile({})->complete);
+        QVERIFY(!isStored(hash));
+        QCOMPARE(readFile(path("trash/pack.zip")), "pack");
+        SharedContent::setStoreForTesting(nullptr);
+    }
+
     void test_stats()
     {
         place("a", "mods/mod.jar", "12345");

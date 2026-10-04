@@ -96,6 +96,11 @@ ContentStore* storeFor(BaseInstance* instance)
     return instance && instanceShares(instance) ? store() : nullptr;
 }
 
+ContentStore* linkedStoreFor(BaseInstance* instance)
+{
+    return instance ? store() : nullptr;
+}
+
 FileState fileState(ContentStore* store, BaseInstance* instance, const QString& gameRoot, const QString& path)
 {
     const QFileInfo info(path);

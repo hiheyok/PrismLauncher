@@ -130,7 +130,9 @@ bool ResourceFolderModel::installResource(QString originalPath)
         case ResourceType::SINGLEFILE:
         case ResourceType::ZIPFILE:
         case ResourceType::LITEMOD: {
-            if (auto* store = sharedStore(); store && !SharedContent::isExcluded(m_instance, gameRelativePath(newPath))) {
+            // a new link, which only an instance that shares its files gets
+            if (auto* store = SharedContent::storeFor(m_instance);
+                store && !SharedContent::isExcluded(m_instance, gameRelativePath(newPath))) {
                 // the user's file is copied into the store, and the instance gets a link to it
                 if (QFile::exists(newPath + ".disabled")) {
                     removeSharedFile(newPath + ".disabled", [&] { return FS::deletePath(newPath + ".disabled"); });
@@ -338,7 +340,8 @@ bool ResourceFolderModel::setResourceEnabled(const QModelIndexList& indexes, Ena
 
 ContentStore* ResourceFolderModel::sharedStore() const
 {
-    return SharedContent::storeFor(m_instance);
+    // existing links are kept right even when the instance stopped sharing new files
+    return SharedContent::linkedStoreFor(m_instance);
 }
 
 void ResourceFolderModel::renameSharedFile(const QString& from, const QString& to) const
@@ -383,8 +386,7 @@ SharedContent::FileState ResourceFolderModel::sharedState(int row) const
     if (!m_instance || row < 0 || row >= m_resources.size() || m_resources[row]->type() == ResourceType::FOLDER) {
         return SharedContent::FileState::NotShareable;
     }
-    return SharedContent::fileState(SharedContent::storeFor(m_instance), m_instance, m_instance->gameRoot(),
-                                    m_resources[row]->fileinfo().absoluteFilePath());
+    return SharedContent::fileState(sharedStore(), m_instance, m_instance->gameRoot(), m_resources[row]->fileinfo().absoluteFilePath());
 }
 
 bool ResourceFolderModel::canKeepLocal(const QModelIndex& index) const
@@ -403,7 +405,7 @@ bool ResourceFolderModel::canRevertToShared(const QModelIndex& index) const
 
 bool ResourceFolderModel::canRestoreOriginal(const QModelIndex& index) const
 {
-    auto* store = SharedContent::storeFor(m_instance);
+    auto* store = sharedStore();
     if (!store || sharedState(index.row()) != SharedContent::FileState::Damaged) {
         return false;
     }
@@ -414,7 +416,7 @@ bool ResourceFolderModel::canRestoreOriginal(const QModelIndex& index) const
 QStringList ResourceFolderModel::keepLocal(const QModelIndexList& indexes)
 {
     QStringList errors;
-    auto* store = SharedContent::storeFor(m_instance);
+    auto* store = sharedStore();
     for (const auto& index : indexes) {
         if (!store || index.column() != 0 || !canKeepLocal(index)) {
             continue;
@@ -464,7 +466,7 @@ QStringList ResourceFolderModel::revertToShared(const QModelIndexList& indexes, 
 QStringList ResourceFolderModel::restoreOriginal(const QModelIndexList& indexes)
 {
     QStringList errors;
-    auto* store = SharedContent::storeFor(m_instance);
+    auto* store = sharedStore();
     for (const auto& index : indexes) {
         if (!store || index.column() != 0 || !canRestoreOriginal(index)) {
             continue;

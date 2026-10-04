@@ -459,11 +459,11 @@ void ExternalResourcesPage::unlockUpdates()
 
 void ExternalResourcesPage::updateSharingActions()
 {
-    // the sharing actions only exist while this instance's files are shared
-    const bool sharing = SharedContent::storeFor(m_instance) != nullptr;
-    for (auto* action : { m_ui->actionKeepLocal, m_ui->actionRevertToShared, m_ui->actionRestoreOriginal }) {
-        action->setVisible(sharing);
-    }
+    // existing links can always be kept local or repaired; reverting makes a new link, only while the instance shares files
+    const bool linked = SharedContent::linkedStoreFor(m_instance) != nullptr;
+    m_ui->actionKeepLocal->setVisible(linked);
+    m_ui->actionRestoreOriginal->setVisible(linked);
+    m_ui->actionRevertToShared->setVisible(SharedContent::storeFor(m_instance) != nullptr);
 }
 
 void ExternalResourcesPage::keepLocal()
