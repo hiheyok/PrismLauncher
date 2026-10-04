@@ -21,6 +21,7 @@
 
 #include "Json.h"
 #include "contentstore/ContentStore.h"
+#include "contentstore/SharedContent.h"
 #include "minecraft/MinecraftInstance.h"
 #include "minecraft/mod/tasks/LocalResourceUpdateTask.h"
 #include "modplatform/flame/FlameAPI.h"
@@ -129,8 +130,21 @@ bool ResourceFolderModel::installResource(QString originalPath)
         case ResourceType::SINGLEFILE:
         case ResourceType::ZIPFILE:
         case ResourceType::LITEMOD: {
+            if (auto* store = sharedStore(); store && !SharedContent::isExcluded(m_instance, gameRelativePath(newPath))) {
+                // the user's file is copied into the store, and the instance gets a link to it
+                if (QFile::exists(newPath + ".disabled")) {
+                    removeSharedFile(newPath + ".disabled", [&] { return FS::deletePath(newPath + ".disabled"); });
+                }
+                const auto placed =
+                    SharedContent::installFile(*store, sharedDestination(newPath), originalPath, ContentStore::IngestMode::Copy);
+                if (placed) {
+                    resource.setFile(QFileInfo(newPath));
+                    return m_isWatching || update();
+                }
+                qWarning() << "Could not share" << originalPath << ":" << placed.error();
+            }
             if (QFile::exists(newPath) || QFile::exists(newPath + QString(".disabled"))) {
-                if (!FS::deletePath(newPath)) {
+                if (!removeSharedFile(newPath, [&] { return FS::deletePath(newPath); })) {
                     qCritical() << "Cleaning up new location (" << newPath << ") was unsuccessful!";
                     return false;
                 }
@@ -224,7 +238,8 @@ bool ResourceFolderModel::uninstallResource(const QString& fileName, bool preser
         }
 
         if (resourceFileName == fileName) {
-            auto res = resource->destroy(indexDir(), preserveMetadata, false);
+            const auto path = resourceFileInfo.absoluteFilePath();
+            auto res = removeSharedFile(path, [&] { return resource->destroy(indexDir(), preserveMetadata, false); });
 
             update();
 
@@ -246,7 +261,7 @@ bool ResourceFolderModel::deleteResources(const QModelIndexList& indexes)
         }
 
         const auto& resource = m_resources.at(i.row());
-        resource->destroy(indexDir());
+        removeSharedFile(resource->fileinfo().absoluteFilePath(), [&] { return resource->destroy(indexDir()); });
     }
 
     update();
@@ -340,6 +355,30 @@ void ResourceFolderModel::renameSharedFile(const QString& from, const QString& t
     if (auto renamed = store->renameRef(key, gameRoot.relativeFilePath(to)); !renamed) {
         qWarning() << "Shared store:" << renamed.error();
     }
+}
+
+QString ResourceFolderModel::gameRelativePath(const QString& path) const
+{
+    return m_instance ? QDir(m_instance->gameRoot()).relativeFilePath(path) : QString();
+}
+
+ContentStore::Destination ResourceFolderModel::sharedDestination(const QString& path) const
+{
+    return SharedContent::destination(*sharedStore(), m_instance->id(), m_instance->gameRoot(), path);
+}
+
+bool ResourceFolderModel::removeSharedFile(const QString& path, const std::function<bool()>& remove) const
+{
+    auto* store = sharedStore();
+    if (!store) {
+        return remove();
+    }
+    // a symbolic link is turned into a copy first, and the link is only forgotten once the file is gone
+    if (auto removed = SharedContent::removeFile(*store, sharedDestination(path).key(), remove); !removed) {
+        qWarning() << "Shared store:" << removed.error();
+        return !QFileInfo::exists(path) && !QFileInfo(path).isSymbolicLink();
+    }
+    return true;
 }
 
 void ResourceFolderModel::noteSharedFileRemoved(const QString& path) const

@@ -55,15 +55,20 @@ class ResourceDownloadTask : public SequentialTask {
     QString m_downloadReason;
     QString m_dependentOn;
     bool m_downloadPrepared = false;
+    // the file in the shared store's temporary folder the download goes to, when it is shared
+    QString m_sharedDownload;
 
     NetJob::Ptr m_filesNetJob;
     LocalResourceUpdateTask::Ptr m_update_task;
 
     // Adds the download to the job. Runs as a step after the update task, once the old resource is known.
     Result<> prepareDownload();
+    // Puts the downloaded file in place and removes the resource it replaces. Runs as a step after the download.
+    Result<> finishDownload();
     void downloadProgressChanged(qint64 current, qint64 total);
     void downloadFailed(QString reason);
-    void downloadSucceeded();
+    // the path of a file of the instance in its game folder, for the shared store
+    QString gameRelativePath(const QString& fileName) const;
 
     std::tuple<QString, QString> to_delete{ "", "" };
 

@@ -192,6 +192,9 @@ void MinecraftInstance::loadSpecificSettings()
     m_settings->registerSetting("UseLatestMinecraftVersion", false);
     m_settings->registerSetting("UseLatestMinecraftVersionType", "release");
 
+    // Shared content store: files kept local, by their path in the game folder without ".disabled"
+    m_settings->registerSetting("SharedStoreExcluded", QStringList());
+
     if (auto global_settings = globalSettings()) {
         m_settings->registerOverride(global_settings->getSetting("JavaPath"), locationOverride);
         m_settings->registerOverride(global_settings->getSetting("JvmArgs"), argsOverride);

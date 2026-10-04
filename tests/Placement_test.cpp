@@ -408,6 +408,8 @@ class PlacementTest : public QObject {
         QVERIFY(ref);
         QCOMPARE(ref->hash, hash);
         QVERIFY(sameFile(path("a/mods/mod.jar"), m_store->objectPath(hash)));
+        // renaming a link onto another link to the same file leaves the source on POSIX
+        QVERIFY(leftovers("a/mods").isEmpty());
     }
 
     void test_sameHashHardToSymbolic()

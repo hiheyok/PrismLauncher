@@ -360,7 +360,7 @@ class ReconcileTest : public QObject {
         const auto hash = place("mod", "mods/mod.jar");
         QVERIFY(FS::deleteTree(path("a")));
         ContentStore::ReconcileOptions options;
-        options.knownOwners.insert(m_store->instanceOwner("a"));
+        options.knownOwners.insert(m_store->instanceOwner("a"), path("a"));
         reconcileAt(m_time, options);
         const auto report = reconcileAt(m_time + 2 * g_day, options);
         QVERIFY(!report.complete);

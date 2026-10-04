@@ -40,6 +40,7 @@
 #include "FileSystem.h"
 
 #include "InstanceList.h"
+#include "contentstore/SharedContent.h"
 #include "ui/dialogs/CustomMessageBox.h"
 
 QString askToUpdateInstanceDirName(BaseInstance* instance, const QString& oldName, const QString& newName, QWidget* parent)
@@ -100,6 +101,7 @@ QString askToUpdateInstanceDirName(BaseInstance* instance, const QString& oldNam
         return QString();
 
     // Now we can confirm that a renaming is happening
+    const auto oldId = instance->id();
     if (!instance->syncInstanceDirName(newRoot)) {
         QMessageBox::warning(parent, QObject::tr("Cannot rename instance"),
                              QObject::tr("An error occurred when performing the following renaming operation: <br/>"
@@ -108,6 +110,14 @@ QString askToUpdateInstanceDirName(BaseInstance* instance, const QString& oldNam
                                          "Only the metadata is renamed.")
                                  .arg(oldRoot, newRoot));
         return QString();
+    }
+    // the links of the instance move with it
+    if (auto* store = SharedContent::store()) {
+        if (auto renamed = store->renameOwner(store->instanceOwner(oldId), store->instanceOwner(QFileInfo(newRoot).fileName()),
+                                              SharedContent::gameRootOf(newRoot));
+            !renamed) {
+            qWarning() << "Shared store:" << renamed.error();
+        }
     }
     return newRoot;
 }

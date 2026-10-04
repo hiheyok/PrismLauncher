@@ -8,6 +8,7 @@
 #include <QTreeView>
 
 #include "Resource.h"
+#include "contentstore/ContentStore.h"
 
 #include "tasks/ConcurrentTask.h"
 #include "tasks/Task.h"
@@ -54,8 +55,6 @@ class QSortFilterProxyModel;
  *
  *  TODO: Make the resources unique pointers accessible through weak pointers.
  */
-class ContentStore;
-
 class ResourceFolderModel : public QAbstractListModel {
     Q_OBJECT
    public:
@@ -288,6 +287,11 @@ class ResourceFolderModel : public QAbstractListModel {
    private:
     // the shared store, if this model belongs to an instance and the store can be changed
     ContentStore* sharedStore() const;
+    QString gameRelativePath(const QString& path) const;
+    // where a file of this folder is, for the shared store; only with a shared store
+    ContentStore::Destination sharedDestination(const QString& path) const;
+    // Removes a file with remove, keeping the shared store's records right. Returns whether the file is gone.
+    bool removeSharedFile(const QString& path, const std::function<bool()>& remove) const;
     // Keeps the shared store's record of a linked file when it is renamed, such as when it is disabled
     void renameSharedFile(const QString& from, const QString& to) const;
     // Tells the shared store that a file disappeared from the folder, so it can mark its link missing

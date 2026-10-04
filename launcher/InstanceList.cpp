@@ -40,6 +40,7 @@
 #include <QDirListing>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMimeData>
@@ -47,6 +48,7 @@
 #include <QStack>
 #include <QTimer>
 #include <QUuid>
+#include <QtConcurrentRun>
 #include <algorithm>
 #include "Json.h"
 
@@ -57,6 +59,7 @@
 
 #include "InstanceTask.h"
 #include "WatchLock.h"
+#include "contentstore/SharedContent.h"
 #include "minecraft/MinecraftInstance.h"
 #include "settings/INISettingsObject.h"
 
@@ -348,7 +351,18 @@ bool InstanceList::trashInstance(const InstanceId& id)
         saveGroupList();
     }
 
-    if (!FS::trash(inst->instanceRoot(), &trashedLoc)) {
+    const auto trash = [&] { return FS::trash(inst->instanceRoot(), &trashedLoc); };
+    bool trashed = false;
+    if (auto* store = SharedContent::store()) {
+        // symbolic links into the store are turned into copies first, so the trash never holds a link that may dangle
+        auto removed = SharedContent::removeInstance(*store, store->instanceOwner(id), [&] { return trashed = trash(); });
+        if (!removed) {
+            qWarning() << "Shared store:" << removed.error();
+        }
+    } else {
+        trashed = trash();
+    }
+    if (!trashed) {
         qWarning() << "Trash of instance" << id << "has not been completely successful...";
         return false;
     }
@@ -444,6 +458,11 @@ void InstanceList::deleteInstance(const InstanceId& id)
     if (!FS::deletePath(inst->instanceRoot())) {
         qWarning() << "Deletion of instance" << id << "has not been completely successful...";
         return;
+    }
+    if (auto* store = SharedContent::store()) {
+        if (auto forgotten = store->forgetOwner(store->instanceOwner(id)); !forgotten) {
+            qWarning() << "Shared store:" << forgotten.error();
+        }
     }
 
     qDebug() << "Instance" << id << "has been deleted by the launcher.";
@@ -1010,9 +1029,10 @@ class InstanceStaging : public Task {
     void childSucceeded()
     {
         const unsigned sleepTime = m_backoff();
-        if (m_parent->commitStagedInstance(m_stagingPath, *m_child, m_child->group())) {
+        InstanceList::FreshFiles fresh;
+        if (m_parent->commitStagedInstance(m_stagingPath, *m_child, m_child->group(), &fresh)) {
             m_backoffTimer.stop();
-            emitSucceeded();
+            shareFreshFiles(fresh);
             return;
         }
         // we actually failed, retry?
@@ -1039,6 +1059,33 @@ class InstanceStaging : public Task {
     }
 
    private:
+    // Shares the files the new or updated instance got, in the background, then finishes
+    void shareFreshFiles(const InstanceList::FreshFiles& fresh)
+    {
+        auto* store = SharedContent::store();
+        auto* instance = m_parent->getInstanceById(fresh.instanceId);
+        if (!store || fresh.files.isEmpty()) {
+            emitSucceeded();
+            return;
+        }
+        setStatus(tr("Sharing files with other instances"));
+        // what the user keeps local in an updated instance stays local
+        QStringList excluded;
+        if (instance && instance->settings()->contains("SharedStoreExcluded")) {
+            excluded = instance->settings()->get("SharedStoreExcluded").toStringList();
+        }
+        connect(&m_shareWatcher, &QFutureWatcher<int>::finished, this, [this] {
+            qDebug() << "Shared" << m_shareWatcher.result() << "files of the new instance";
+            emitSucceeded();
+        });
+        m_shareWatcher.setFuture(QtConcurrent::run([store, fresh, excluded] {
+            return SharedContent::shareFreshFiles(*store, fresh.instanceId, fresh.gameRoot, fresh.files, [&excluded](const QString& path) {
+                return excluded.contains(SharedContent::exclusionKey(path));
+            });
+        }));
+    }
+
+    QFutureWatcher<int> m_shareWatcher;
     InstanceList* m_parent;
     /*
      * WHY: the whole reason why this uses an exponential backoff retry scheme is antivirus on Windows.
@@ -1090,7 +1137,7 @@ QString InstanceList::getStagedInstancePath(const QString& targetDir)
     return result;
 }
 
-bool InstanceList::commitStagedInstance(const QString& path, const InstanceTask& instanceTask, QString groupName)
+bool InstanceList::commitStagedInstance(const QString& path, const InstanceTask& instanceTask, QString groupName, FreshFiles* fresh)
 {
     if (groupName.isEmpty() && !groupName.isNull()) {
         groupName = QString();
@@ -1121,6 +1168,13 @@ bool InstanceList::commitStagedInstance(const QString& path, const InstanceTask&
         WatchLock lock(m_watcher, targetDir);
         QString destination = FS::PathCombine(targetDir, instID);
 
+        // the files of the content folders the launcher just produced, by their place in the instance
+        // (by their path in the instance folder, as the destination may not exist yet)
+        QStringList freshFiles;
+        for (const auto& file : SharedContent::shareableFiles(SharedContent::gameRootOf(path))) {
+            freshFiles.append(QDir(destination).absoluteFilePath(QDir(path).relativeFilePath(file)));
+        }
+
         if (shouldOverride) {
             if (!FS::overrideFolder(destination, path)) {
                 qWarning() << "Failed to override" << path << "to" << destination;
@@ -1138,6 +1192,10 @@ bool InstanceList::commitStagedInstance(const QString& path, const InstanceTask&
         }
 
         m_instanceSet.insert(instID);
+
+        if (fresh) {
+            *fresh = { instID, SharedContent::gameRootOf(destination), freshFiles };
+        }
 
         emit instancesChanged();
         emit instanceSelectRequest(instID);

@@ -79,6 +79,8 @@ set(CORE_SOURCES
     contentstore/ObjectFiles.cpp
     contentstore/Placement.cpp
     contentstore/Reconcile.cpp
+    contentstore/SharedContent.h
+    contentstore/SharedContent.cpp
     contentstore/Journal.h
     contentstore/Journal.cpp
     contentstore/Recovery.h
