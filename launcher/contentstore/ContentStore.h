@@ -393,6 +393,12 @@ class ContentStore {
     State setState(State state, const QString& message = {});
     // Stores the candidate file under hash, or finds the stored file already there. Called with m_mutex locked.
     Result<IngestResult> publishLocked(const QString& candidate, const QString& hash, qint64 size);
+    // ingest, where a source linked in that the caller flushed and pinned against writers isn't flushed again, which would
+    // need write access the pin refuses
+    Result<IngestResult> ingestFile(const QString& source,
+                                    IngestMode mode,
+                                    const std::optional<PrecomputedDigest>& digest,
+                                    bool sourceFlushedAndPinned);
     // Where the file of a generation is
     QString generationPath(const QString& hash, const Generation& generation) const;
     // Whether path holds the link that ref records

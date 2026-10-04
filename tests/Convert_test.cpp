@@ -269,6 +269,32 @@ class ConvertTest : public QObject {
     }
 
 #if defined(Q_OS_WIN)
+    void test_noWriterDuringTheConversion()
+    {
+        QVERIFY(writeFile(file("mods/mod.jar"), "original"));
+        const auto target = file("mods/mod.jar");
+        // another program tries to open the file for writing while it becomes the stored file
+        bool tried = false;
+        std::unique_ptr<QFile> writer;
+        FS::Testing::setFaultHook([&](FS::Testing::Operation operation, const QString&) {
+            if (!tried && operation == FS::Testing::Operation::Replace) {
+                tried = true;
+                writer = std::make_unique<QFile>(target);
+                if (!writer->open(QIODevice::ReadWrite)) {
+                    writer.reset();
+                }
+            }
+            return false;
+        });
+        const auto converted = m_store->convert(destination("mods/mod.jar"));
+        FS::Testing::setFaultHook(nullptr);
+        QVERIFY(tried);
+        QVERIFY2(!writer, "a writer could open the file during the conversion");
+        QVERIFY2(converted, converted ? "" : qPrintable(converted.error()));
+        QCOMPARE(converted->outcome, Outcome::Shared);
+        QCOMPARE(readFile(m_store->objectPath(sha256Of("original"))), "original");
+    }
+
     void test_fileOpenForWritingIsSkipped()
     {
         QVERIFY(writeFile(file("mods/mod.jar"), "being written"));

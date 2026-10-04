@@ -731,10 +731,10 @@ QJsonObject RefTable::snapshot() const
         destroying[it.key()] = *it;
     }
 
-    QJsonObject snapshot{ { "entries", entries },       { "refs", refs },
-                          { "owners", owners },         { "ownerVolumes", ownerVolumes },
-                          { "clients", clients },       { "transactions", transactions },
-                          { "destroying", destroying }, { "nextTransactionId", m_nextTransactionId },
+    QJsonObject snapshot{ { "entries", entries },        { "refs", refs },
+                          { "owners", owners },          { "ownerVolumes", ownerVolumes },
+                          { "clients", clients },        { "transactions", transactions },
+                          { "destroying", destroying },  { "nextTransactionId", m_nextTransactionId },
                           { "latestTime", m_latestTime } };
     // only written when there are any, so a snapshot without them is one a version 1 launcher fully understands
     if (!m_freezes.isEmpty()) {

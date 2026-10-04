@@ -93,6 +93,14 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
                                                         IngestMode mode,
                                                         const std::optional<PrecomputedDigest>& digest)
 {
+    return ingestFile(source, mode, digest, false);
+}
+
+Result<ContentStore::IngestResult> ContentStore::ingestFile(const QString& source,
+                                                            IngestMode mode,
+                                                            const std::optional<PrecomputedDigest>& digest,
+                                                            bool sourceFlushedAndPinned)
+{
     if (!isWritable()) {
         return std::unexpected(QString("The shared store can't be changed"));
     }
@@ -163,7 +171,9 @@ Result<ContentStore::IngestResult> ContentStore::ingest(const QString& source,
         hash = *copied;
     }
 
-    if (auto flushed = FS::flushFile(candidate); !flushed) {
+    if (sourceLinked && sourceFlushedAndPinned) {
+        // the candidate is the caller's source, which it flushed before pinning it
+    } else if (auto flushed = FS::flushFile(candidate); !flushed) {
         return undo(flushed.error());
     }
     if (!ObjectFiles::makeReadOnly(candidate)) {

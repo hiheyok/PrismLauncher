@@ -156,18 +156,16 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
     if (!linkIn && !g_canReplaceUserFiles) {
         return skipped(QString("Replacing %1 isn't supported on this system yet").arg(path));
     }
-    // No other program may be writing to it (only enforced on Windows). A copy keeps it pinned until it is replaced, so
-    // none can start either; the user's own file becoming the stored file is made read-only instead, which keeps new
-    // writers away while still letting the store write it to disk, and a write while it is hashed is noticed.
-    std::optional<FS::PinnedFile> pin;
-    {
-        auto pinned = FS::pinFile(path);
-        if (!pinned) {
-            return skipped(pinned.error());
-        }
-        if (!linkIn) {
-            pin = std::move(*pinned);
-        }
+    // The user's own file becoming the stored file is written to disk first: once pinned, flushing it would need write
+    // access the pin refuses.
+    if (linkIn) {
+        TRY(FS::flushFile(path))
+    }
+    // No other program may be writing to it, and none can start until the conversion is over: making the file read-only
+    // wouldn't stop a writer that opened it before (only enforced on Windows)
+    auto pin = FS::pinFile(path);
+    if (!pin) {
+        return skipped(pin.error());
     }
     TRY_INTO(const auto before, FS::identity(path))
 
@@ -204,7 +202,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
         return std::unexpected(interruptedError());
     }
 
-    const auto stored = ingest(path, IngestMode::LinkIn);
+    const auto stored = ingestFile(path, IngestMode::LinkIn, std::nullopt, true);
     if (!stored) {
         guard.restore();
         finish("failed");
