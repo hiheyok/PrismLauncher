@@ -1,6 +1,5 @@
 #include "WriterGuard.h"
 
-#include <QCryptographicHash>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -10,6 +9,7 @@
 #include <utility>
 
 #include "contentstore/ObjectFiles.h"
+#include "contentstore/Sha256.h"
 
 #if defined(Q_OS_LINUX)
 #include <dirent.h>
@@ -344,7 +344,7 @@ Result<QString> WriterGuard::sha256(const QString& path) const
 #if defined(Q_OS_LINUX)
     if (m_leaseDescriptor >= 0) {
         // through the lease's own descriptor: opening the file again would break the lease
-        QCryptographicHash hash(QCryptographicHash::Sha256);
+        Sha256 hash;
         QByteArray buffer(1024 * 1024, Qt::Uninitialized);
         off_t offset = 0;
         while (true) {
@@ -358,7 +358,7 @@ Result<QString> WriterGuard::sha256(const QString& path) const
             hash.addData(QByteArrayView(buffer.constData(), bytesRead));
             offset += bytesRead;
         }
-        return QString::fromLatin1(hash.result().toHex());
+        return hash.hexResult();
     }
 #endif
     return ObjectFiles::sha256(path);

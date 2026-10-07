@@ -1,6 +1,6 @@
 #include "ObjectFiles.h"
+#include "contentstore/Sha256.h"
 
-#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -31,7 +31,7 @@ Result<QString> sha256(const QString& path)
     if (!file.open(QIODevice::ReadOnly)) {
         return std::unexpected(QString("Failed to open %1: %2").arg(path, file.errorString()));
     }
-    QCryptographicHash hash(QCryptographicHash::Sha256);
+    Sha256 hash;
     QByteArray buffer(g_chunkSize, Qt::Uninitialized);
     qint64 total = 0;
     while (true) {
@@ -50,7 +50,7 @@ Result<QString> sha256(const QString& path)
     if (total != before.size || !sameContents(before, after)) {
         return std::unexpected(QString("%1 changed while it was read").arg(path));
     }
-    return QString::fromLatin1(hash.result().toHex());
+    return hash.hexResult();
 }
 
 Result<QString> copyAndHash(const QString& source, const QString& target)
@@ -64,7 +64,7 @@ Result<QString> copyAndHash(const QString& source, const QString& target)
     if (!output.open(QIODevice::WriteOnly | QIODevice::ExistingOnly | QIODevice::Truncate)) {
         return std::unexpected(QString("Failed to open %1: %2").arg(target, output.errorString()));
     }
-    QCryptographicHash hash(QCryptographicHash::Sha256);
+    Sha256 hash;
     QByteArray buffer(g_chunkSize, Qt::Uninitialized);
     qint64 total = 0;
     while (true) {
@@ -89,7 +89,7 @@ Result<QString> copyAndHash(const QString& source, const QString& target)
     if (total != before.size || !sameContents(before, after)) {
         return std::unexpected(QString("%1 changed while it was copied").arg(source));
     }
-    return QString::fromLatin1(hash.result().toHex());
+    return hash.hexResult();
 }
 
 bool makeReadOnly(const QString& path)
