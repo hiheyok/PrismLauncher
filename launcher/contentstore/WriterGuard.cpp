@@ -111,16 +111,29 @@ bool saveCopy(int source, const char* partial, const char* target, const char* d
 
 [[noreturn]] void runSalvage(int source, int lock, int maxDescriptor, const char* partial, const char* target, const char* dir)
 {
-    // It may outlive the launcher, so it keeps nothing of it open but the removed file and its own lock, such as the
-    // store's lock
+    // It may outlive the launcher, so it keeps nothing of it open but the removed file and its own lock: not the store's
+    // lock, and not the launcher's output, which whatever reads it would otherwise wait on until the helper ends
+    if (const int null = open("/dev/null", O_RDWR); null >= 0) {
+        // a launcher started without them may have the removed file or the lock there
+        for (const int standard : { STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO }) {
+            if (standard != source && standard != lock && standard != null) {
+                dup2(null, standard);
+            }
+        }
+        if (null > STDERR_FILENO) {
+            close(null);
+        }
+    }
     for (int descriptor = 3; descriptor < maxDescriptor; descriptor++) {
         if (descriptor != source && descriptor != lock) {
             close(descriptor);
         }
     }
-    // Waits for the program for as long as it keeps the file open. Saving is tried for a day at most, so a folder that
-    // never becomes writable doesn't keep it forever.
-    for (int failures = 0; failures < 24 * 60 * 60;) {
+    // Keeps the removed file until a copy is saved: it is the only one, so the helper never gives up while saving
+    // fails, such as on a full disk or a folder that isn't writable. It waits for the program for as long as it keeps
+    // the file open, and tries again less often the longer saving fails.
+    long retryMs = 1000;
+    while (true) {
         // A lease is only granted while no other program has the file open: the program closed it. Held while copying,
         // so the copy is consistent.
         if (fcntl(source, F_SETLEASE, F_WRLCK) != 0) {
@@ -132,10 +145,9 @@ bool saveCopy(int source, const char* partial, const char* target, const char* d
         if (saved) {
             _exit(0);
         }
-        failures++;
-        sleepMs(1000);
+        sleepMs(retryMs);
+        retryMs = retryMs < 30000 ? retryMs * 2 : 60000;
     }
-    _exit(1);
 }
 
 bool openedByOthers(const FS::FileId& id)

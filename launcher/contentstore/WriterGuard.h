@@ -52,8 +52,8 @@ class WriterGuard {
     // For a file removed while guarded, after disturbed() found a program that opened it as it was removed: hands the
     // removed file to a helper process, which keeps it for as long as that program needs, even after the launcher
     // exited. The helper waits until the program closed the file, then saves what it holds at target, durably, trying
-    // again if that fails. The program may write once this returns. If no helper could be started, the guard keeps the
-    // file, and a later call, or the end of the guard, tries again. Only a Linux lease keeps hold of a removed file;
+    // again until that works: it never lets go of the only copy. The program may write once this returns. If no helper could be started,
+    // the guard keeps the file, and a later call, or the end of the guard, tries again. Only a Linux lease keeps hold of a removed file;
     // elsewhere this does nothing.
     Result<> salvage(const QString& target);
     // Whether the helper of a salvage to target still runs; target may not exist until it is done
