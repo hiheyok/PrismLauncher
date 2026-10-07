@@ -336,6 +336,60 @@ class BackupTest : public QObject {
         QVERIFY(leftovers().isEmpty());
     }
 
+    void test_failedRestoreIsRetried()
+    {
+        prepare();
+        const auto before = FS::fileId(userFile());
+        stopAt(Step::Swapped);
+        QVERIFY(!m_store->convert(destination()));
+        QVERIFY(appendFile(backupPath(), " and an edit"));
+
+        // putting the file back fails when the store opens
+        const auto target = QFileInfo(userFile()).absoluteFilePath();
+        m_store.reset();
+        FS::Testing::setFaultHook([&target](Operation operation, const QString& replaced) {
+            return operation == Operation::Replace && QFileInfo(replaced).absoluteFilePath() == target;
+        });
+        m_store = std::make_unique<ContentStore>(path("store"), path("data"));
+        QCOMPARE(m_store->open(), ContentStore::State::Writable);
+        // nothing is given up: the transaction stays, with the edits in the backup
+        QCOMPARE(m_store->table().transactions().size(), 1);
+        QCOMPARE(readFile(backupPath()), "common mod and an edit");
+        QCOMPARE(m_store->format().accessFor(1), StoreAccess::ReadOnly);
+
+        // the next start puts it back
+        reopen();
+        QCOMPARE(FS::fileId(userFile()), before);
+        QCOMPARE(readFile(userFile()), "common mod and an edit");
+        QVERIFY(m_store->table().transactions().isEmpty());
+        QVERIFY(leftovers().isEmpty());
+    }
+
+    void test_failedBackupRemovalIsRetried()
+    {
+        const auto hash = prepare();
+        stopAt(Step::Swapped);
+        QVERIFY(!m_store->convert(destination()));
+
+        // removing the intact backup fails when the store opens
+        m_store.reset();
+        FS::Testing::setFaultHook([](Operation operation, const QString& removed) {
+            return operation == Operation::Delete && QFileInfo(removed).fileName().startsWith(".prism-bak-");
+        });
+        m_store = std::make_unique<ContentStore>(path("store"), path("data"));
+        QCOMPARE(m_store->open(), ContentStore::State::Writable);
+        // committed, and the backup is still tracked, so the store stays at version 2
+        QCOMPARE(m_store->table().ref(destination().key())->hash, hash);
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        QVERIFY(!backupPath().isEmpty());
+        QCOMPARE(m_store->format().accessFor(1), StoreAccess::ReadOnly);
+
+        reopen();
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        QVERIFY(leftovers().isEmpty());
+        QCOMPARE(m_store->format().accessFor(1), StoreAccess::Writable);
+    }
+
     void test_crashWhileAborting()
     {
         const auto hash = prepare();

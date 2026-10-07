@@ -85,18 +85,21 @@ QList<QJsonObject> finish(const Transaction& transaction, const QString& path)
         if (!backupExists) {
             // it was made before the swap, so something else removed it; the swap is what happened
             qWarning() << "Shared store: the backup" << transaction.backupPath << "of a replacement is gone";
-            return { RefRecord::commit(transaction.id), RefRecord::backupReleased(transaction.id) };
         }
-        if (backupIsIntact(transaction)) {
-            discardFile(transaction.backupPath);
+        if (!backupExists || backupIsIntact(transaction)) {
+            // committed first; the backup is then removed like that of any committed replacement, and kept pending if
+            // that fails
             discardFile(transaction.temporaryPath);
-            return { RefRecord::commit(transaction.id), RefRecord::backupReleased(transaction.id) };
+            return { RefRecord::commit(transaction.id) };
         }
     }
     if (holdsNewFile(transaction, path) || isFile(path, old) || (!inspect(path).exists && isFile(transaction.backupPath, old))) {
         if (restore(transaction, path)) {
             return { RefRecord::abort(transaction.id) };
         }
+        // the user's file isn't back yet, so the transaction stays open and the next start tries again
+        qWarning() << "Shared store: couldn't put" << transaction.backupPath << "back at" << path << "yet";
+        return {};
     }
     // neither file is where it is expected: both are left as they are for a person to look at
     qWarning() << "Shared store: couldn't tell how a replacement of" << path << "ended; its backup is" << transaction.backupPath;
