@@ -140,6 +140,9 @@ class ContentStore {
         // empty when the user's file was put back at path; otherwise something newer was there, and the user's file
         // was saved here
         QString recoveredPath;
+        // A program was still writing to it when the launcher closed: the saved file holds what it had written by
+        // then, and nothing it wrote later. recoveredPath is empty if the launcher stopped before it could save it.
+        bool incomplete = false;
     };
 
     struct UnshareResult {

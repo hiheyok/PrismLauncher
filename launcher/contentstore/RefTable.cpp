@@ -432,6 +432,11 @@ QJsonObject restoreConflict(qint64 transactionId)
     return { { "type", "restoreConflict" }, { "transaction", transactionId } };
 }
 
+QJsonObject backupSalvaging(qint64 transactionId, const QString& salvagePath)
+{
+    return { { "type", "backupSalvaging" }, { "transaction", transactionId }, { "salvagePath", salvagePath } };
+}
+
 QJsonObject backupTrashed(qint64 transactionId, const QString& trashPath)
 {
     return { { "type", "backupTrashed" }, { "transaction", transactionId }, { "trashPath", trashPath } };
@@ -671,6 +676,14 @@ Result<> RefTable::apply(const QJsonObject& record)
     }
     if (type == "backupReleased") {
         m_pendingBackups.remove(record["transaction"].toInteger());
+        return {};
+    }
+    if (type == "backupSalvaging") {
+        const auto pending = m_pendingBackups.find(record["transaction"].toInteger());
+        if (pending == m_pendingBackups.end()) {
+            return std::unexpected(QString("Salvage of an unknown backup"));
+        }
+        pending->salvagePath = record["salvagePath"].toString();
         return {};
     }
     if (type == "backupTrashed") {
@@ -915,6 +928,9 @@ QJsonObject RefTable::snapshot() const
             if (!it->trashedFrom.isEmpty()) {
                 json["trashedFrom"] = it->trashedFrom;
             }
+            if (!it->salvagePath.isEmpty()) {
+                json["salvagePath"] = it->salvagePath;
+            }
             pending[QString::number(it.key())] = json;
         }
         snapshot["pendingBackups"] = pending;
@@ -1010,6 +1026,7 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
         backup.restoring = json["restoring"].toBool();
         backup.recoveredPath = json["recoveredPath"].toString();
         backup.trashedFrom = json["trashedFrom"].toString();
+        backup.salvagePath = json["salvagePath"].toString();
         table.m_pendingBackups[it.key().toLongLong()] = backup;
     }
     const auto freezes = snapshot["freezes"].toObject();

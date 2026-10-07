@@ -438,6 +438,45 @@ class ValidationTest : public QObject {
 #endif
     }
 
+    void test_salvageSurvivesClosing()
+    {
+#if !defined(Q_OS_LINUX)
+        QSKIP("Only a Linux lease keeps hold of a removed file");
+#else
+        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
+            QSKIP("This file system doesn't offer leases");
+        }
+        replaceAndStop();
+        reopen();
+        const auto trash = m_store->table().pendingBackups().first().backupPath;
+        // a program opens it as it is removed, and only writes a while later
+        std::unique_ptr<QProcess> writer;
+        m_store->setInterruptionForTesting([&](Step step) {
+            if (step == Step::Removing && !writer) {
+                writer = std::make_unique<QProcess>();
+                writer->start("sh", { "-c", QString("exec 3>>'%1'; sleep 2; printf late >&3").arg(trash) });
+                writer->waitForStarted();
+                QTest::qWait(300);
+            }
+            return false;
+        });
+        QCOMPARE(*m_store->validatePendingBackups(), 1);
+        m_store->setInterruptionForTesting(nullptr);
+        QVERIFY(!m_store->table().pendingBackups().first().salvagePath.isEmpty());
+
+        // the launcher closes before the program wrote: it waits for it, and keeps the write
+        reopen();
+        QVERIFY(finished(*writer));
+        const auto files = recovered();
+        QCOMPARE(files.size(), 1);
+        QCOMPARE(readFile(files.first()), "common modlate");
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        const auto restored = m_store->takeRestoredFiles();
+        QCOMPARE(restored.size(), 1);
+        QCOMPARE(restored.first().recoveredPath, files.first());
+#endif
+    }
+
     void test_pendingSurvivesCompaction()
     {
         replaceAndStop();

@@ -254,6 +254,41 @@ class WriterGuardTest : public QObject {
         QVERIFY(backupPath().isEmpty());
     }
 
+    void test_failedSalvageIsRetried()
+    {
+#if !defined(Q_OS_LINUX)
+        QSKIP("Only a Linux lease keeps hold of a removed file");
+#else
+        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
+            QSKIP("This file system doesn't offer leases");
+        }
+        QVERIFY(writeFile(userFile(), "common mod"));
+        auto guard = WriterGuard::acquire(userFile());
+        QVERIFY(guard);
+        QVERIFY(FS::deleteLink(userFile()));
+        const auto removed = QString("/proc/%1/fd/%2").arg(QCoreApplication::applicationPid()).arg(guard->descriptorForTesting());
+        auto writer = appendTo(removed, "late");
+        QTest::qWait(300);
+        QVERIFY(guard->disturbed(userFile()));
+        guard->beginSalvage(path("saved"), QString::fromLatin1(QCryptographicHash::hash("common mod", QCryptographicHash::Sha256).toHex()));
+        QVERIFY(finished(*writer));
+
+        // saving fails once: nothing is given up
+        FS::Testing::setFaultHook([](FS::Testing::Operation operation, const QString& file) {
+            return operation == FS::Testing::Operation::FlushFile && file.endsWith(".part");
+        });
+        QVERIFY(!guard->trySalvage());
+        FS::Testing::setFaultHook(nullptr);
+        QVERIFY(!QFileInfo::exists(path("saved")));
+        QVERIFY(!QFileInfo::exists(path("saved.part")));
+
+        const auto saved = guard->trySalvage();
+        QVERIFY2(saved, saved ? "" : qPrintable(saved.error()));
+        QCOMPARE(*saved, WriterGuard::Salvage::Saved);
+        QCOMPARE(readFile(path("saved")), "common modlate");
+#endif
+    }
+
     void test_salvageOfARemovedFile()
     {
 #if !defined(Q_OS_LINUX)

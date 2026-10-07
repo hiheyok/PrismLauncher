@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QThread>
 
 #include <utility>
 
@@ -86,9 +87,17 @@ bool openedByOthers(const QString& path)
 WriterGuard::~WriterGuard()
 {
     if (!m_salvageTarget.isEmpty()) {
-        // the file is gone once this ends, so what it holds now is all that can be kept
-        qWarning() << "Shared store: a program still has a removed backup open; saving what it wrote so far";
-        if (auto saved = finishSalvage(); !saved) {
+        // The file is gone once this ends. The program gets a few seconds to finish writing; after that, what the file
+        // holds is all that can be kept.
+        bool closed = false;
+        for (int waited = 0; waited < 5000 && !(closed = writerClosed()); waited += 50) {
+            QThread::msleep(50);
+        }
+        if (!closed) {
+            qWarning() << "Shared store: a program still has a removed backup open; saving what it wrote so far";
+        }
+        // saved even when unchanged, so the next start can tell that apart from a copy that was never made
+        if (auto saved = finishSalvage(true); !saved) {
             qWarning() << "Shared store:" << saved.error();
         }
     }
@@ -272,13 +281,22 @@ void WriterGuard::beginSalvage([[maybe_unused]] const QString& target, [[maybe_u
 #endif
 }
 
+bool WriterGuard::writerClosed() const
+{
+#if defined(Q_OS_LINUX)
+    return m_leaseDescriptor >= 0 && fcntl(m_leaseDescriptor, F_SETLEASE, F_WRLCK) == 0;
+#else
+    return true;
+#endif
+}
+
 Result<WriterGuard::Salvage> WriterGuard::trySalvage()
 {
 #if defined(Q_OS_LINUX)
     if (m_salvageTarget.isEmpty()) {
         return Salvage::Unchanged;
     }
-    if (fcntl(m_leaseDescriptor, F_SETLEASE, F_WRLCK) != 0) {
+    if (!writerClosed()) {
         return Salvage::Waiting;
     }
     return finishSalvage();
@@ -287,47 +305,54 @@ Result<WriterGuard::Salvage> WriterGuard::trySalvage()
 #endif
 }
 
-Result<WriterGuard::Salvage> WriterGuard::finishSalvage()
+Result<WriterGuard::Salvage> WriterGuard::finishSalvage([[maybe_unused]] bool always)
 {
 #if defined(Q_OS_LINUX)
-    const auto target = std::exchange(m_salvageTarget, {});
-    const auto expectedDigest = std::exchange(m_salvageDigest, {});
-    auto digest = sha256(target);
-    if (!digest) {
-        release();
-        return std::unexpected(digest.error());
-    }
-    if (*digest == expectedDigest) {
+    // Nothing is given up until the copy is durable: on an error the target, the digest and the removed file stay, and
+    // the next call tries again
+    TRY_INTO(const auto digest, sha256(m_salvageTarget))
+    if (digest == m_salvageDigest && !always) {
+        m_salvageTarget.clear();
+        m_salvageDigest.clear();
         release();
         return Salvage::Unchanged;
     }
-    QDir().mkpath(QFileInfo(target).absolutePath());
-    QFile file(target);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        release();
-        return std::unexpected(QString("Failed to create %1").arg(target));
+    QDir().mkpath(QFileInfo(m_salvageTarget).absolutePath());
+    // written next to it and renamed into place, so the target is only ever a complete copy
+    const auto partial = m_salvageTarget + ".part";
+    {
+        QFile file(partial);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            return std::unexpected(QString("Failed to create %1").arg(partial));
+        }
+        QByteArray buffer(1024 * 1024, Qt::Uninitialized);
+        off_t offset = 0;
+        while (true) {
+            const auto bytesRead = pread(m_leaseDescriptor, buffer.data(), static_cast<std::size_t>(buffer.size()), offset);
+            if (bytesRead < 0) {
+                file.remove();
+                return std::unexpected(QString("Failed to read a removed backup"));
+            }
+            if (bytesRead == 0) {
+                break;
+            }
+            if (file.write(buffer.constData(), bytesRead) != bytesRead) {
+                file.remove();
+                return std::unexpected(QString("Failed to write %1").arg(partial));
+            }
+            offset += bytesRead;
+        }
     }
-    QByteArray buffer(1024 * 1024, Qt::Uninitialized);
-    off_t offset = 0;
-    while (true) {
-        const auto bytesRead = pread(m_leaseDescriptor, buffer.data(), static_cast<std::size_t>(buffer.size()), offset);
-        if (bytesRead < 0) {
-            release();
-            return std::unexpected(QString("Failed to read a removed backup"));
-        }
-        if (bytesRead == 0) {
-            break;
-        }
-        if (file.write(buffer.constData(), bytesRead) != bytesRead) {
-            release();
-            return std::unexpected(QString("Failed to write %1").arg(target));
-        }
-        offset += bytesRead;
+    if (auto durable = FS::flushFile(partial).and_then([&] { return FS::replaceFile(partial, m_salvageTarget); }).and_then([&] {
+            return FS::flushDir(QFileInfo(m_salvageTarget).absolutePath());
+        });
+        !durable) {
+        QFile::remove(partial);
+        return std::unexpected(durable.error());
     }
-    file.close();
+    m_salvageTarget.clear();
+    m_salvageDigest.clear();
     release();
-    TRY(FS::flushFile(target))
-    TRY(FS::flushDir(QFileInfo(target).absolutePath()))
     return Salvage::Saved;
 #else
     return Salvage::Unchanged;

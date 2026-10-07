@@ -293,6 +293,24 @@ Result<bool> ContentStore::validateBackupLocked(qint64 id, QSet<QString>& unused
         // removed, but a program that opened it as it was removed still has it open
         return finishSalvageLocked(id, salvage->second);
     }
+    if (!pending.salvagePath.isEmpty()) {
+        // A salvage the launcher closed during: it saved what the removed file held then, if it could. Nothing can reach
+        // that file anymore, so this is all there is.
+        if (QFileInfo::exists(pending.salvagePath)) {
+            // nothing was written after all
+            if (const auto digest = ObjectFiles::sha256(pending.salvagePath); digest && *digest == pending.transaction.expectedDigest) {
+                discardFile(pending.salvagePath);
+                TRY(commitLocked({ RefRecord::backupReleased(id) }))
+                return true;
+            }
+        }
+        const bool saved = QFileInfo::exists(pending.salvagePath);
+        qWarning() << "Shared store: a program was writing to the removed backup of" << ownerPath(pending.key)
+                   << "when the launcher closed;" << (saved ? "what it had written is in " + pending.salvagePath : "it was lost");
+        m_restoredFiles.append({ ownerPath(pending.key), saved ? pending.salvagePath : QString(), true });
+        TRY(commitLocked({ RefRecord::backupReleased(id) }))
+        return true;
+    }
     if (!pending.trashedFrom.isEmpty() && !inspect(pending.backupPath).exists && inspect(pending.trashedFrom).exists) {
         // the rename aside was recorded, but a crash came first
         TRY(FS::replaceFile(pending.trashedFrom, pending.backupPath))
@@ -345,8 +363,12 @@ Result<bool> ContentStore::validateBackupLocked(qint64 id, QSet<QString>& unused
     if (guard->disturbed(pending.backupPath)) {
         // A program opened it as it was removed, and waits on the lease with a file that has no name. The guard keeps
         // that file, and what the program writes is saved once it closes it; until then the backup stays pending.
-        guard->beginSalvage(recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id),
-                            pending.transaction.expectedDigest);
+        const auto recovered = recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id);
+        // recorded before the program may write, so a restart knows to look for what was saved
+        if (auto journaled = commitLocked({ RefRecord::backupSalvaging(id, recovered) }); !journaled) {
+            qWarning() << "Shared store:" << journaled.error();
+        }
+        guard->beginSalvage(recovered, pending.transaction.expectedDigest);
         const auto salvage = m_salvages.emplace(id, std::move(*guard)).first;
         // a moment for one that writes and closes right away
         return finishSalvageLocked(id, salvage->second, 10);

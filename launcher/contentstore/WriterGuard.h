@@ -55,8 +55,10 @@ class WriterGuard {
     // closed it, if they no longer hash to expectedDigest. Only a Linux lease keeps hold of a removed file; elsewhere
     // nothing is saved.
     void beginSalvage(const QString& target, const QString& expectedDigest);
-    // Whether the program closed the file yet, and what was done then. While it is Waiting, the guard must be kept, as
-    // the file is gone once it ends. A guard that ends while waiting saves what the file holds by then.
+    // Whether the program closed the file yet, and what was done then. While it is Waiting, or after an error, the
+    // guard must be kept, as the file is gone once it ends; a later call tries again. A guard that ends while waiting
+    // gives the program a few seconds to finish, then saves what the file holds by then: nothing can keep a file
+    // without a name once this process ends.
     Result<Salvage> trySalvage();
 
     // the descriptor holding a Linux lease, or -1, so tests can open the file the way another program would
@@ -84,5 +86,8 @@ class WriterGuard {
     QString m_salvageTarget;
     QString m_salvageDigest;
 
-    Result<Salvage> finishSalvage();
+    // always saves a copy when the launcher closes, so a restart can tell an unchanged file from one never saved
+    Result<Salvage> finishSalvage(bool always = false);
+    // whether the program that opened the removed file closed it: only then is a lease granted again
+    bool writerClosed() const;
 };

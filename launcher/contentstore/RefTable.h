@@ -138,6 +138,9 @@ struct PendingBackup {
     // The backup was validated, and renamed from here to backupPath, a name no other program knows, before it is
     // removed by a later validation. A program that was about to open it gets a file that still has a name.
     QString trashedFrom;
+    // The backup was removed, but a program opened it as it was; what it writes is saved here once it closed it, or when
+    // the launcher closes first. Never released without a look at that file.
+    QString salvagePath;
 
     bool operator==(const PendingBackup&) const = default;
 };
@@ -219,6 +222,8 @@ QJsonObject restoreConflictBegin(qint64 transactionId, const QString& recoveredP
 QJsonObject restoreConflict(qint64 transactionId);
 // The validated backup is about to be renamed to trashPath, where a later validation removes it; written before
 QJsonObject backupTrashed(qint64 transactionId, const QString& trashPath);
+// A program opened the backup as it was removed; what it writes is saved at salvagePath. Written before it may write.
+QJsonObject backupSalvaging(qint64 transactionId, const QString& salvagePath);
 // The current generation turned out damaged: it is kept at retiredPath for the links that use it, and the hash has no
 // current generation until an intact copy is stored
 QJsonObject retire(const QString& hash, int generation, const QString& retiredPath);
