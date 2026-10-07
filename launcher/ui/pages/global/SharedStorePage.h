@@ -37,6 +37,7 @@ class SharedStorePage : public QWidget, public BasePage {
     QComboBox* m_linkMode = nullptr;
     QLineEdit* m_storeDir = nullptr;
     QCheckBox* m_reconcileOnStartup = nullptr;
+    QCheckBox* m_shareExisting = nullptr;
     QLabel* m_status = nullptr;
     QLabel* m_volumeWarning = nullptr;
     QPushButton* m_verify = nullptr;

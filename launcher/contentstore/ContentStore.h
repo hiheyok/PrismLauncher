@@ -263,10 +263,24 @@ class ContentStore {
         Skipped,
     };
 
+    // Why a conversion left a file as it is
+    enum class ConvertSkip : std::uint8_t {
+        None,
+        // a folder or a link
+        NotAFile,
+        // on a network drive, and the user didn't confirm that no other computer uses it
+        NetworkVolume,
+        // it has other hard links, and adopting them wasn't asked for
+        HardLinked,
+        // another program has it open for writing
+        InUse,
+    };
+
     struct ConvertResult {
         ConvertOutcome outcome = ConvertOutcome::Skipped;
         QString reason;
         QString hash;
+        ConvertSkip skip = ConvertSkip::None;
     };
 
     ContentStore(QString storeDir, QString dataDir);

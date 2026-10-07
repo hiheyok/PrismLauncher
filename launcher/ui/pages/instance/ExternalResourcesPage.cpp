@@ -127,6 +127,7 @@ ExternalResourcesPage::ExternalResourcesPage(MinecraftInstance* instance, Resour
     connect(m_ui->actionLockUpdates, &QAction::triggered, this, &ExternalResourcesPage::lockUpdates);
     connect(m_ui->actionUnlockUpdates, &QAction::triggered, this, &ExternalResourcesPage::unlockUpdates);
     connect(m_ui->actionKeepLocal, &QAction::triggered, this, &ExternalResourcesPage::keepLocal);
+    connect(m_ui->actionShare, &QAction::triggered, this, &ExternalResourcesPage::share);
     connect(m_ui->actionRevertToShared, &QAction::triggered, this, &ExternalResourcesPage::revertToShared);
     connect(m_ui->actionRestoreOriginal, &QAction::triggered, this, &ExternalResourcesPage::restoreOriginal);
     // whether this instance shares its files at all, while the launcher shares files
@@ -410,6 +411,7 @@ void ExternalResourcesPage::updateActions()
         return std::ranges::any_of(selection, [&](const QModelIndex& index) { return index.column() == 0 && (m_model->*can)(index); });
     };
     m_ui->actionKeepLocal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canKeepLocal));
+    m_ui->actionShare->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canShare));
     m_ui->actionRevertToShared->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRevertToShared));
     m_ui->actionRestoreOriginal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRestoreOriginal));
     m_ui->actionExportMetadata->setEnabled(!m_model->empty());
@@ -464,6 +466,7 @@ void ExternalResourcesPage::updateSharingActions()
     m_ui->actionKeepLocal->setVisible(linked);
     m_ui->actionRestoreOriginal->setVisible(linked);
     m_ui->actionRevertToShared->setVisible(SharedContent::storeFor(m_instance) != nullptr);
+    m_ui->actionShare->setVisible(SharedContent::storeFor(m_instance) != nullptr);
 }
 
 void ExternalResourcesPage::keepLocal()
@@ -471,6 +474,20 @@ void ExternalResourcesPage::keepLocal()
     const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
     if (const auto errors = m_model->keepLocal(selection); !errors.isEmpty()) {
         CustomMessageBox::selectable(this, tr("Could not keep local copies"), errors.join('\n'), QMessageBox::Warning)->show();
+    }
+    updateActions();
+}
+
+void ExternalResourcesPage::share()
+{
+    if (m_instance->isRunning()) {
+        CustomMessageBox::selectable(this, tr("Could not share"), tr("Close the instance before sharing its files."), QMessageBox::Warning)
+            ->show();
+        return;
+    }
+    const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
+    if (const auto errors = m_model->share(selection); !errors.isEmpty()) {
+        CustomMessageBox::selectable(this, tr("Could not share"), errors.join('\n'), QMessageBox::Warning)->show();
     }
     updateActions();
 }

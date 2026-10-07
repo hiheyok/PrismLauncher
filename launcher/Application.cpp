@@ -41,10 +41,14 @@
  */
 
 #include "Application.h"
+
+#include <QTimer>
+#include <QtConcurrentRun>
 #include "BuildConfig.h"
 
 #include "DataMigrationTask.h"
 #include "contentstore/ContentStore.h"
+#include "contentstore/DeduplicateInstanceTask.h"
 #include "contentstore/SharedContent.h"
 #include "contentstore/StoreTasks.h"
 #include "java/JavaInstallList.h"
@@ -721,6 +725,8 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
         m_settings->registerSetting("SharedStoreEnabled", true);
         // look for links nobody recorded and release what is gone, after the instances are loaded
         m_settings->registerSetting("SharedStoreReconcileOnStartup", true);
+        // share the existing files of every instance when the launcher starts ("Share all content"), off unless chosen
+        m_settings->registerSetting("SharedStoreShareExisting", false);
         m_settings->registerSetting("SharedStoreDir", "store");
         // Auto, HardLinks or Symlinks
         m_settings->registerSetting("SharedStoreLinkMode", "Auto");
@@ -1050,7 +1056,22 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
         m_contentStoreTask = makeShared<ReconcileStoreTask>(m_contentStore.get(), SharedContent::reconcileOptions(*m_contentStore));
         connect(m_contentStoreTask.get(), &Task::failed, this,
                 [](const QString& reason) { qWarning() << "Shared store: reconciliation failed:" << reason; });
+        // after it, as it records the links it finds
+        connect(m_contentStoreTask.get(), &Task::finished, this, [this] {
+            if (m_settings->get("SharedStoreShareExisting").toBool()) {
+                QTimer::singleShot(0, this, &Application::shareExistingInstances);
+            }
+        });
         m_contentStoreTask->start();
+    } else if (m_contentStore && m_contentStore->isWritable() && m_settings->get("SharedStoreShareExisting").toBool()) {
+        QTimer::singleShot(0, this, &Application::shareExistingInstances);
+    }
+
+    // backups of shared files that were still in use are validated again once they aren't
+    if (m_contentStore) {
+        auto* timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, &Application::validatePendingBackups);
+        timer->start(60 * 1000);
     }
 
     // and accounts
@@ -1278,6 +1299,60 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
     performMainStartupAction();
 }
 
+void Application::shareExistingInstances()
+{
+    m_shareQueue.clear();
+    for (int i = 0; i < m_instances->count(); i++) {
+        auto* instance = m_instances->at(i);
+        // nobody is there to confirm a network drive
+        if (SharedContent::storeFor(instance) && !FS::isNetworkVolume(instance->gameRoot())) {
+            m_shareQueue.append(instance->id());
+        }
+    }
+    shareNextInstance();
+}
+
+void Application::shareNextInstance()
+{
+    while (!m_shareQueue.isEmpty()) {
+        auto* instance = m_instances->getInstanceById(m_shareQueue.takeFirst());
+        if (!instance || instance->isRunning() || !m_contentStore || !m_contentStore->isWritable()) {
+            continue;
+        }
+        m_shareTask = makeShared<DeduplicateInstanceTask>(m_contentStore.get(), instance);
+        connect(m_shareTask.get(), &Task::failed, this,
+                [](const QString& reason) { qWarning() << "Shared store: sharing an instance failed:" << reason; });
+        // the next one starts once this one is done with its signals
+        connect(m_shareTask.get(), &Task::finished, this, [this] { QTimer::singleShot(0, this, &Application::shareNextInstance); });
+        m_shareTask->start();
+        return;
+    }
+}
+
+void Application::validatePendingBackups()
+{
+    if (!m_contentStore || !m_contentStore->isWritable() || m_validation.isRunning()) {
+        return;
+    }
+    const auto& pending = m_contentStore->table().pendingBackups();
+    if (std::ranges::none_of(pending, [](const PendingBackup& backup) { return backup.awaitValidation || backup.restoring; })) {
+        return;
+    }
+    // in the background, as it hashes the files
+    m_validation.disconnect(this);
+    connect(&m_validation, &QFutureWatcher<void>::finished, this, [this] {
+        const auto restored = m_contentStore->takeRestoredFiles();
+        if (!restored.isEmpty() && m_mainWindow) {
+            m_mainWindow->showRestoredFiles(restored);
+        }
+    });
+    m_validation.setFuture(QtConcurrent::run([store = m_contentStore.get()] {
+        if (auto left = store->validatePendingBackups(); !left) {
+            qWarning() << "Shared store:" << left.error();
+        }
+    }));
+}
+
 bool Application::createSetupWizard()
 {
     bool javaRequired = [this]() {
@@ -1481,6 +1556,8 @@ void Application::showFatalErrorMessage(const QString& title, const QString& con
 
 Application::~Application()
 {
+    // a validation in the background uses the store, which goes with this
+    m_validation.waitForFinished();
     // Shut down logger by setting the logger function to nothing
     qInstallMessageHandler(nullptr);
 }

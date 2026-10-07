@@ -41,6 +41,7 @@
 #pragma once
 
 #include <memory>
+#include "contentstore/SharedContent.h"
 
 #include <QMainWindow>
 #include <QProcess>
@@ -69,6 +70,10 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 
    public:
+    // what sharing the files of an instance did, and what validations of shared files found
+    void showShareReport(const SharedContent::ShareReport& report, const QList<ContentStore::RestoredFile>& restoredFiles);
+    void showRestoredFiles(const QList<ContentStore::RestoredFile>& restoredFiles);
+
     explicit MainWindow(QWidget* parent = 0);
     ~MainWindow();
 
@@ -103,6 +108,8 @@ class MainWindow : public QMainWindow {
     void on_actionDISCORD_triggered();
 
     void on_actionCopyInstance_triggered();
+
+    void on_actionShareAllContent_triggered();
 
     void on_actionChangeInstGroup_triggered();
 

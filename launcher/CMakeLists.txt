@@ -100,6 +100,8 @@ set(CORE_SOURCES
     contentstore/StoreFiles.cpp
     contentstore/StoreTasks.h
     contentstore/StoreTasks.cpp
+    contentstore/DeduplicateInstanceTask.h
+    contentstore/DeduplicateInstanceTask.cpp
     contentstore/SymlinkAllowList.h
     contentstore/SymlinkAllowList.cpp
 

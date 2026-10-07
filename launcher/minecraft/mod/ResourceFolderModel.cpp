@@ -396,6 +396,15 @@ bool ResourceFolderModel::canKeepLocal(const QModelIndex& index) const
            state == SharedContent::FileState::Local;
 }
 
+bool ResourceFolderModel::canShare(const QModelIndex& index) const
+{
+    if (!SharedContent::storeFor(m_instance)) {
+        return false;
+    }
+    const auto state = sharedState(index.row());
+    return state == SharedContent::FileState::Local || state == SharedContent::FileState::KeptLocal;
+}
+
 bool ResourceFolderModel::canRevertToShared(const QModelIndex& index) const
 {
     auto* store = SharedContent::storeFor(m_instance);
@@ -424,6 +433,26 @@ QStringList ResourceFolderModel::keepLocal(const QModelIndexList& indexes)
         const auto path = at(index.row()).fileinfo().absoluteFilePath();
         if (auto kept = SharedContent::keepLocal(*store, m_instance, sharedDestination(path)); !kept) {
             errors.append(kept.error());
+        }
+        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+    }
+    return errors;
+}
+
+QStringList ResourceFolderModel::share(const QModelIndexList& indexes)
+{
+    QStringList errors;
+    auto* store = SharedContent::storeFor(m_instance);
+    for (const auto& index : indexes) {
+        if (!store || index.column() != 0 || !canShare(index)) {
+            continue;
+        }
+        const auto path = at(index.row()).fileinfo().absoluteFilePath();
+        const auto shared = SharedContent::shareFile(*store, m_instance, sharedDestination(path));
+        if (!shared) {
+            errors.append(shared.error());
+        } else if (shared->outcome == ContentStore::ConvertOutcome::Skipped) {
+            errors.append(shared->reason);
         }
         emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
     }

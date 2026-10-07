@@ -104,6 +104,39 @@ int shareFreshFiles(ContentStore& store,
                     const QStringList& paths,
                     const std::function<bool(const QString&)>& excluded = {});
 
+// What sharing the existing files of an instance did ("Share all content")
+struct ShareReport {
+    int shared = 0;
+    int alreadyShared = 0;
+    // the size of the files that became links to a file another instance, or another of these files, already stored
+    qint64 bytesSaved = 0;
+    struct Skipped {
+        QString path;
+        ContentStore::ConvertSkip reason = ContentStore::ConvertSkip::None;
+    };
+    QList<Skipped> skipped;
+    // the files that couldn't be shared, with why; each is left as it was
+    QStringList failed;
+    // stopped before every file was looked at
+    bool stopped = false;
+};
+
+// Shares the existing files of an instance in place: every file that may be shared and isn't kept local becomes a link
+// to a stored file, or stays exactly as it was. excluded tells which relative paths are kept local. progress is told
+// how many files are done of how many, and stops the run by returning false.
+ShareReport shareInstance(ContentStore& store,
+                          const QString& instanceId,
+                          const QString& gameRoot,
+                          const ContentStore::ConvertOptions& options,
+                          const std::function<bool(const QString&)>& excluded = {},
+                          const std::function<bool(int done, int total)>& progress = {});
+
+// "Share": shares a local file of an instance, also one the user kept local, which from now on isn't kept local anymore
+Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
+                                              BaseInstance* instance,
+                                              const ContentStore::Destination& destination,
+                                              const ContentStore::ConvertOptions& options = {});
+
 // Removes a resource file of an instance: a symbolic link is first turned into a local copy, so a trashed file never
 // points into the store, then remove runs, and only if it succeeded the link is forgotten
 Result<> removeFile(ContentStore& store, const RefKey& key, const std::function<bool()>& remove);

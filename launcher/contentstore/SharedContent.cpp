@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 
 #include "Application.h"
 #include "BaseInstance.h"
@@ -266,6 +267,73 @@ Result<PlacementKind> installFile(ContentStore& store,
         TRY_INTO(replaces, FS::identity(destination.path()))
     }
     return store.placeAt({ destination, stored->hash, replaces });
+}
+
+ShareReport shareInstance(ContentStore& store,
+                          const QString& instanceId,
+                          const QString& gameRoot,
+                          const ContentStore::ConvertOptions& options,
+                          const std::function<bool(const QString&)>& excluded,
+                          const std::function<bool(int done, int total)>& progress)
+{
+    ShareReport report;
+    const auto files = shareableFiles(gameRoot);
+    // what is stored already, so a file that becomes a link to it saves its size
+    QSet<QString> stored;
+    for (const auto& entry : store.table().entries()) {
+        if (entry.current) {
+            stored.insert(entry.hash);
+        }
+    }
+    for (int done = 0; done < files.size(); done++) {
+        if (progress && !progress(done, static_cast<int>(files.size()))) {
+            report.stopped = true;
+            break;
+        }
+        const auto& path = files[done];
+        const auto target = destination(store, instanceId, gameRoot, path);
+        if (excluded && excluded(target.relativePath)) {
+            continue;
+        }
+        const auto size = QFileInfo(path).size();
+        const auto converted = store.convert(target, options);
+        if (!converted) {
+            report.failed.append(converted.error());
+            continue;
+        }
+        switch (converted->outcome) {
+            case ContentStore::ConvertOutcome::Shared:
+                report.shared++;
+                if (stored.contains(converted->hash)) {
+                    report.bytesSaved += size;
+                }
+                stored.insert(converted->hash);
+                break;
+            case ContentStore::ConvertOutcome::AlreadyShared:
+                report.alreadyShared++;
+                break;
+            case ContentStore::ConvertOutcome::Skipped:
+                report.skipped.append({ path, converted->skip });
+                break;
+        }
+    }
+    if (progress && !report.stopped) {
+        progress(static_cast<int>(files.size()), static_cast<int>(files.size()));
+    }
+    return report;
+}
+
+Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
+                                              BaseInstance* instance,
+                                              const ContentStore::Destination& destination,
+                                              const ContentStore::ConvertOptions& options)
+{
+    auto converted = store.convert(destination, options);
+    if (converted && converted->outcome != ContentStore::ConvertOutcome::Skipped) {
+        // shared now, so it isn't kept local anymore
+        setExcluded(instance, destination.relativePath, false);
+    }
+    return converted;
 }
 
 int shareFreshFiles(ContentStore& store,

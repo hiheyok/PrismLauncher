@@ -67,6 +67,7 @@ class ExternalResourcesPage : public QMainWindow, public BasePage {
     void unlockUpdates();
     void updateSharingActions();
     void keepLocal();
+    void share();
     void revertToShared();
     void restoreOriginal();
 

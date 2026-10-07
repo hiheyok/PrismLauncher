@@ -45,6 +45,11 @@ SharedStorePage::SharedStorePage(QWidget* parent) : QWidget(parent)
     form->addRow(tr("Folder:"), dirRow);
     m_reconcileOnStartup = new QCheckBox(tr("Look for changed links when the launcher starts"), settingsBox);
     form->addRow(m_reconcileOnStartup);
+    m_shareExisting = new QCheckBox(tr("Share the content of existing instances when the launcher starts"), settingsBox);
+    m_shareExisting->setToolTip(
+        tr("Runs \"Share All Content\" for every instance that isn't running. Instances on network drives "
+           "are left out, as they need to be confirmed."));
+    form->addRow(m_shareExisting);
     auto* restartNote = new QLabel(tr("Turning sharing on or off and changing the folder take effect when the launcher restarts. "
                                       "Files already shared stay usable either way."),
                                    settingsBox);
@@ -171,6 +176,7 @@ void SharedStorePage::loadSettings()
     m_linkMode->setCurrentIndex(std::max(0, m_linkMode->findData(settings->get("SharedStoreLinkMode").toString())));
     m_storeDir->setText(settings->get("SharedStoreDir").toString());
     m_reconcileOnStartup->setChecked(settings->get("SharedStoreReconcileOnStartup").toBool());
+    m_shareExisting->setChecked(settings->get("SharedStoreShareExisting").toBool());
 }
 
 bool SharedStorePage::apply()
@@ -180,6 +186,7 @@ bool SharedStorePage::apply()
     settings->set("SharedStoreLinkMode", m_linkMode->currentData().toString());
     settings->set("SharedStoreDir", m_storeDir->text());
     settings->set("SharedStoreReconcileOnStartup", m_reconcileOnStartup->isChecked());
+    settings->set("SharedStoreShareExisting", m_shareExisting->isChecked());
     if (auto* store = APPLICATION->contentStore()) {
         // the link mode applies right away
         store->setLinkMode(ContentStore::linkModeFromSetting(m_linkMode->currentData().toString()));

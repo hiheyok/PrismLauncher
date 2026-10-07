@@ -77,6 +77,7 @@ TexturePackPage::TexturePackPage(MinecraftInstance* instance, TexturePackFolderM
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionUnlockUpdates, m_ui->actionKeepLocal);
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionKeepLocal, m_ui->actionRevertToShared);
     m_ui->actionsToolbar->insertActionAfter(m_ui->actionRevertToShared, m_ui->actionRestoreOriginal);
+    m_ui->actionsToolbar->insertActionAfter(m_ui->actionRestoreOriginal, m_ui->actionShare);
 }
 
 void TexturePackPage::updateFrame(const QModelIndex& current, [[maybe_unused]] const QModelIndex& previous)

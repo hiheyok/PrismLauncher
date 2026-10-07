@@ -234,6 +234,14 @@
     <string>Unlock the resource to allow it to be updated</string>
    </property>
   </action>
+  <action name="actionShare">
+   <property name="text">
+    <string>Share</string>
+   </property>
+   <property name="toolTip">
+    <string>Share the selected local files with other instances, so each is stored only once</string>
+   </property>
+  </action>
   <action name="actionKeepLocal">
    <property name="text">
     <string>Keep Local Copy</string>

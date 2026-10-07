@@ -45,6 +45,7 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
 
+#include <QCheckBox>
 #include <QDir>
 #include <QFileInfo>
 #include <QUrl>
@@ -131,6 +132,10 @@
 
 #include "InstanceCopyTask.h"
 #include "InstanceDirUpdate.h"
+#include "StringUtils.h"
+#include "contentstore/DeduplicateInstanceTask.h"
+#include "contentstore/SharedContent.h"
+#include "contentstore/WriterGuard.h"
 
 #include "Json.h"
 
@@ -893,6 +898,119 @@ void MainWindow::on_actionCopyInstance_triggered()
     copyTask->setIcon(copyInstDlg.iconKey());
     unique_qobject_ptr<Task> task(APPLICATION->instances()->wrapInstanceTask(copyTask));
     runModalTask(task.get());
+}
+
+void MainWindow::on_actionShareAllContent_triggered()
+{
+    if (!m_selectedInstance) {
+        return;
+    }
+    auto* store = SharedContent::storeFor(m_selectedInstance);
+    if (!store) {
+        return;
+    }
+    if (m_selectedInstance->isRunning()) {
+        CustomMessageBox::selectable(this, tr("Share all content"), tr("Close the instance before sharing its content."),
+                                     QMessageBox::Warning)
+            ->show();
+        return;
+    }
+
+    // what the user should know before their files are replaced by links
+    const auto gameRoot = m_selectedInstance->gameRoot();
+    QStringList notes{ tr("Each mod, resource pack and shader pack of %1 that another instance also has will be stored only once. "
+                          "Files you keep local are left as they are.")
+                           .arg(m_selectedInstance->name()) };
+    if (WriterGuard::tierFor(QDir(gameRoot).filePath("mods")) == WriterGuard::Tier::BestEffort) {
+        notes.append(
+            tr("On this system, other programs can't be kept from writing to the files while they are shared. Don't "
+               "edit this instance's files until sharing finished; a change made meanwhile is put back afterwards where "
+               "it can be noticed, which is not guaranteed."));
+    }
+    const bool network = FS::isNetworkVolume(gameRoot);
+    if (network) {
+        notes.append(
+            tr("This instance is on a network drive. Programs on other computers can change its files without this "
+               "launcher noticing: only continue if no other computer uses this instance."));
+    }
+    if (!FS::sameVolume(gameRoot, store->storeDir())) {
+        notes.append(
+            tr("This instance is on another drive than the shared store. Its files can only be shared through symbolic "
+               "links, and files that can't be linked are left as they are."));
+    }
+    auto* box = CustomMessageBox::selectable(this, tr("Share all content"), notes.join("\n\n"), QMessageBox::Question,
+                                             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    auto* adopt = new QCheckBox(tr("Also share files that are hard-linked elsewhere (they stop being linked to those other files)"));
+    box->setCheckBox(adopt);
+    if (box->exec() != QMessageBox::Yes) {
+        return;
+    }
+
+    ContentStore::ConvertOptions options;
+    options.adoptHardLinked = adopt->isChecked();
+    // confirmed above
+    options.allowNetworkVolumes = network;
+    auto task = makeShared<DeduplicateInstanceTask>(store, m_selectedInstance, options);
+    runModalTask(task.get());
+    if (task->report()) {
+        showShareReport(*task->report(), task->restoredFiles());
+    }
+}
+
+void MainWindow::showRestoredFiles(const QList<ContentStore::RestoredFile>& restoredFiles)
+{
+    QStringList lines;
+    for (const auto& restored : restoredFiles) {
+        if (restored.incomplete) {
+            lines.append(tr("A program wrote to %1 while it was being shared, and that change could not be kept.").arg(restored.path));
+        } else if (restored.recoveredPath.isEmpty()) {
+            lines.append(tr("%1 was changed while it was being shared; your version was put back.").arg(restored.path));
+        } else {
+            lines.append(tr("A version of %1 changed while it was being shared was saved to %2, as the file has since been replaced.")
+                             .arg(restored.path, restored.recoveredPath));
+        }
+    }
+    CustomMessageBox::selectable(this, tr("Shared files"), lines.join("\n\n"), QMessageBox::Warning)->show();
+}
+
+void MainWindow::showShareReport(const SharedContent::ShareReport& report, const QList<ContentStore::RestoredFile>& restoredFiles)
+{
+    QStringList lines{ tr("%n file(s) shared, saving %1.", "", report.shared).arg(StringUtils::humanReadableFileSize(report.bytesSaved)) };
+    if (report.alreadyShared > 0) {
+        lines.append(tr("%n file(s) were shared already.", "", report.alreadyShared));
+    }
+    int hardLinked = 0;
+    int inUse = 0;
+    for (const auto& skipped : report.skipped) {
+        if (skipped.reason == ContentStore::ConvertSkip::HardLinked) {
+            hardLinked++;
+        } else if (skipped.reason == ContentStore::ConvertSkip::InUse) {
+            inUse++;
+        }
+    }
+    if (hardLinked > 0) {
+        lines.append(tr("%n file(s) were left as they are because they are hard-linked elsewhere.", "", hardLinked));
+    }
+    if (inUse > 0) {
+        lines.append(tr("%n file(s) were left as they are because another program has them open.", "", inUse));
+    }
+    if (!report.failed.isEmpty()) {
+        lines.append(tr("These files could not be shared, and were left as they are:\n%1").arg(report.failed.join('\n')));
+    }
+    for (const auto& restored : restoredFiles) {
+        if (restored.incomplete) {
+            lines.append(tr("A program wrote to %1 while it was being shared, and that change could not be kept.").arg(restored.path));
+        } else if (restored.recoveredPath.isEmpty()) {
+            lines.append(tr("%1 was changed while it was being shared; your version was put back.").arg(restored.path));
+        } else {
+            lines.append(tr("A version of %1 changed while it was being shared was saved to %2, as the file has since been replaced.")
+                             .arg(restored.path, restored.recoveredPath));
+        }
+    }
+    const bool problems = !report.failed.isEmpty() || !restoredFiles.isEmpty();
+    CustomMessageBox::selectable(this, tr("Share all content"), lines.join("\n\n"),
+                                 problems ? QMessageBox::Warning : QMessageBox::Information)
+        ->show();
 }
 
 void MainWindow::addInstance(const QString& url, const QMap<QString, QString>& extra_info)
@@ -1796,6 +1914,7 @@ void MainWindow::setInstanceActionsEnabled(bool enabled)
     ui->actionExportInstance->setEnabled(enabled);
     ui->actionDeleteInstance->setEnabled(enabled);
     ui->actionCopyInstance->setEnabled(enabled);
+    ui->actionShareAllContent->setEnabled(enabled && SharedContent::storeFor(m_selectedInstance) != nullptr);
     ui->actionCreateInstanceShortcut->setEnabled(enabled);
 }
 
