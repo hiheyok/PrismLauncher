@@ -336,6 +336,15 @@ Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
     return converted;
 }
 
+namespace {
+std::function<void(const QString&)> s_beforeMoveCopy;
+}  // namespace
+
+void setBeforeMoveCopyForTesting(std::function<void(const QString& path)> hook)
+{
+    s_beforeMoveCopy = std::move(hook);
+}
+
 MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress)
 {
     MoveReport report;
@@ -365,17 +374,22 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
             }
             continue;
         }
+        // taken before the copy: a file put there meanwhile, such as by an update, then differs from it, and isn't replaced
+        // with the bytes before
+        const auto identity = FS::identity(path);
+        if (!identity) {
+            report.failed.append(QString("%1: %2").arg(path, identity.error()));
+            continue;
+        }
+        if (s_beforeMoveCopy) {
+            s_beforeMoveCopy(path);
+        }
         // the bytes the instance sees, a damaged copy as it is: from the file a symbolic link points at, as copying checks
         // the size of the file it reads, and a link's own size is that of its target's path
         const auto source = info.isSymLink() ? info.symLinkTarget() : path;
         const auto stored = to.ingest(source, ContentStore::IngestMode::Copy);
         if (!stored) {
             report.failed.append(QString("%1: %2").arg(path, stored.error()));
-            continue;
-        }
-        const auto identity = FS::identity(path);
-        if (!identity) {
-            report.failed.append(QString("%1: %2").arg(path, identity.error()));
             continue;
         }
         // the old store's file isn't kept anyway, so where no link works a copy of it is better than nothing
@@ -395,6 +409,42 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
         progress(static_cast<int>(refs.size()), static_cast<int>(refs.size()));
     }
     return report;
+}
+
+namespace {
+// The folder with links resolved, as far as it exists: the rest of the path is appended as it is
+QString resolvedFolder(const QString& dir)
+{
+    const auto absolute = QDir::cleanPath(QFileInfo(dir).absoluteFilePath());
+    auto existing = absolute;
+    QString rest;
+    while (!QFileInfo::exists(existing)) {
+        const auto parent = QFileInfo(existing).path();
+        if (parent == existing) {
+            return absolute;
+        }
+        rest = QFileInfo(existing).fileName() + (rest.isEmpty() ? QString() : '/' + rest);
+        existing = parent;
+    }
+    const auto canonical = QFileInfo(existing).canonicalFilePath();
+    return QDir::cleanPath(rest.isEmpty() ? canonical : canonical + '/' + rest);
+}
+}  // namespace
+
+bool foldersOverlap(const QString& first, const QString& second)
+{
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    // the file systems there usually ignore case
+    constexpr auto sensitivity = Qt::CaseInsensitive;
+#else
+    constexpr auto sensitivity = Qt::CaseSensitive;
+#endif
+    const auto a = resolvedFolder(first);
+    const auto b = resolvedFolder(second);
+    const auto within = [&](const QString& inner, const QString& outer) {
+        return inner.compare(outer, sensitivity) == 0 || inner.startsWith(outer.endsWith('/') ? outer : outer + '/', sensitivity);
+    };
+    return within(a, b) || within(b, a);
 }
 
 QStringList linksInto(const QString& dir, const QStringList& gameRoots)

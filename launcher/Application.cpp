@@ -1316,7 +1316,8 @@ bool Application::contentStoreBusy() const
 
 void Application::replaceContentStore(std::unique_ptr<ContentStore> store)
 {
-    // the finished tasks still point at the store before
+    // the finished tasks still point at the store before, as may a validation started before it changed
+    m_validation.waitForFinished();
     m_contentStoreTask.reset();
     m_shareTask.reset();
     m_shareQueue.clear();
@@ -1340,6 +1341,10 @@ void Application::shareNextInstance()
 {
     while (!m_shareQueue.isEmpty()) {
         auto* instance = m_instances->getInstanceById(m_shareQueue.takeFirst());
+        if (m_contentStoreChanging) {
+            m_shareQueue.clear();
+            return;
+        }
         if (!instance || instance->isRunning() || !m_contentStore || !m_contentStore->isWritable()) {
             continue;
         }
@@ -1369,7 +1374,7 @@ void Application::reportRestoredFiles(const QList<ContentStore::RestoredFile>& r
 
 void Application::validatePendingBackups()
 {
-    if (!m_contentStore || m_validation.isRunning()) {
+    if (!m_contentStore || m_validation.isRunning() || m_contentStoreChanging) {
         return;
     }
     // All of it in the background: the store is locked while it validates or reconciles, which can take long, and the

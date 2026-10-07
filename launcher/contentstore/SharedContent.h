@@ -152,15 +152,20 @@ struct MoveReport {
     bool stopped = false;
 };
 
-// Moves every link of this launcher that the store from records to the store to, such as when the store's folder changes: each linked file is
-// stored in to, then linked from there in its place (a hard link where to allows it), and only then released in from.
-// Files kept local aren't linked, so they are left as they are. progress is told how many links are done, and stops the
-// move by returning false. A file that fails keeps working through from, which then still records it.
+// Moves every link of this launcher that the store from records to the store to, such as when the store's folder changes: each linked file
+// is stored in to, then linked from there in its place (a hard link where to allows it), and only then released in from. Files kept local
+// aren't linked, so they are left as they are. progress is told how many links are done, and stops the move by returning false. A file that
+// fails keeps working through from, which then still records it.
 MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress = {});
 
 // The files in the content folders of these game folders that are symbolic links into dir, such as into a store that is
 // about to be deleted
 QStringList linksInto(const QString& dir, const QStringList& gameRoots);
+// Whether one folder is the other or within it, links resolved: a store can't move into or out of itself, as removing the
+// old folder would remove the new one with it
+bool foldersOverlap(const QString& first, const QString& second);
+// Called by moveShares before it copies each file, such as to change it then
+void setBeforeMoveCopyForTesting(std::function<void(const QString& path)> hook);
 
 // Removes a resource file of an instance: a symbolic link is first turned into a local copy, so a trashed file never
 // points into the store, then remove runs, and only if it succeeded the link is forgotten
