@@ -70,8 +70,10 @@ bool restore(const Transaction& transaction, const QString& path)
         discardFile(transaction.backupPath);
     }
     discardFile(transaction.temporaryPath);
+    // only a durable restore counts: until then a power loss could undo it, so the transaction must stay open
     if (auto flushed = FS::flushDir(QFileInfo(path).absolutePath()); !flushed) {
         qWarning() << "Shared store:" << flushed.error();
+        return false;
     }
     return isFile(path, old) && !isFile(transaction.backupPath, old);
 }
@@ -196,8 +198,10 @@ Result<> ContentStore::releaseBackupsLocked()
         if (QFileInfo::exists(it->backupPath)) {
             continue;
         }
+        // released only once the removal is durable; until then it stays pending and is removed again later
         if (auto flushed = FS::flushDir(QFileInfo(it->backupPath).absolutePath()); !flushed) {
             qWarning() << "Shared store:" << flushed.error();
+            continue;
         }
         records.append(RefRecord::backupReleased(it.key()));
     }

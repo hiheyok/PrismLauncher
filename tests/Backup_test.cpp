@@ -390,6 +390,55 @@ class BackupTest : public QObject {
         QCOMPARE(m_store->format().accessFor(1), StoreAccess::Writable);
     }
 
+    void test_restoreWaitsUntilDurable()
+    {
+        prepare();
+        const auto before = FS::fileId(userFile());
+        stopAt(Step::Swapped);
+        QVERIFY(!m_store->convert(destination()));
+        QVERIFY(appendFile(backupPath(), " and an edit"));
+
+        // the user's file is put back, but its folder can't be flushed
+        const auto mods = QFileInfo(path("a/mods")).absoluteFilePath();
+        m_store.reset();
+        FS::Testing::setFaultHook([&mods](Operation operation, const QString& dir) {
+            return operation == Operation::FlushDir && QFileInfo(dir).absoluteFilePath() == mods;
+        });
+        m_store = std::make_unique<ContentStore>(path("store"), path("data"));
+        QCOMPARE(m_store->open(), ContentStore::State::Writable);
+        // a power loss could still undo it, so it stays open
+        QCOMPARE(m_store->table().transactions().size(), 1);
+
+        reopen();
+        QCOMPARE(FS::fileId(userFile()), before);
+        QCOMPARE(readFile(userFile()), "common mod and an edit");
+        QVERIFY(m_store->table().transactions().isEmpty());
+    }
+
+    void test_releaseWaitsUntilDurable()
+    {
+        prepare();
+        const auto mods = QFileInfo(path("a/mods")).absoluteFilePath();
+        // every flush of the folder works until the replacement committed
+        m_store->setInterruptionForTesting([&mods](Step step) {
+            if (step == Step::Committed) {
+                FS::Testing::setFaultHook([&mods](Operation operation, const QString& dir) {
+                    return operation == Operation::FlushDir && QFileInfo(dir).absoluteFilePath() == mods;
+                });
+            }
+            return false;
+        });
+        QVERIFY(m_store->convert(destination()));
+        m_store->setInterruptionForTesting(nullptr);
+        // the removal of the backup isn't durable, so it is still tracked
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        QCOMPARE(m_store->format().accessFor(1), StoreAccess::ReadOnly);
+
+        reopen();
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        QVERIFY(leftovers().isEmpty());
+    }
+
     void test_crashWhileAborting()
     {
         const auto hash = prepare();
