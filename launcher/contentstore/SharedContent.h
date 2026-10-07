@@ -78,6 +78,9 @@ QString unsharedFrom(BaseInstance* instance, const QString& relativePath);
 // "Keep local copy": turns a shared file into a writable local copy of the bytes it shows, and keeps it local from now on,
 // also through updates. A file that already is local is just kept local.
 Result<> keepLocal(ContentStore& store, BaseInstance* instance, const ContentStore::Destination& destination);
+// The store's part of keepLocal, which may run on any thread: turns a shared file into a local copy. Returns the stored
+// file it was linked to, to keep as the one to revert to, or nothing for a file that already was local.
+Result<QString> unshareToLocal(ContentStore& store, const ContentStore::Destination& destination);
 
 // Whether "Revert to shared version" can work: the file was kept local and the stored file it came from is intact
 bool canRevert(ContentStore& store, BaseInstance* instance, const QString& relativePath);

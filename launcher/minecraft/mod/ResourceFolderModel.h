@@ -11,6 +11,7 @@
 #include "Resource.h"
 #include "contentstore/ContentStore.h"
 #include "contentstore/SharedContent.h"
+#include "contentstore/SharingActionTask.h"
 
 #include "tasks/ConcurrentTask.h"
 #include "tasks/Task.h"
@@ -208,12 +209,14 @@ class ResourceFolderModel : public QAbstractListModel {
     // "Restore original" applies to links to a damaged copy, once an intact copy is stored
     bool canRestoreOriginal(const QModelIndex& index) const;
     // Each returns the errors, if any
-    QStringList keepLocal(const QModelIndexList& indexes);
-    // "Share": shares the local files, which aren't kept local anymore. Returns what went wrong, per file.
-    QStringList share(const QModelIndexList& indexes);
+    // The sharing actions return a task that does the file work in the background; it isn't started. Once it finished,
+    // the rows show the files as they are, and its errors() tell what went wrong, per file.
+    shared_qobject_ptr<SharingActionTask> keepLocal(const QModelIndexList& indexes);
+    // "Share": shares the local files, which aren't kept local anymore
+    shared_qobject_ptr<SharingActionTask> share(const QModelIndexList& indexes);
     // identities are the files the user confirmed discarding, by path, from fileIdentities
-    QStringList revertToShared(const QModelIndexList& indexes, const QMap<QString, FS::FileIdentity>& identities);
-    QStringList restoreOriginal(const QModelIndexList& indexes);
+    shared_qobject_ptr<SharingActionTask> revertToShared(const QModelIndexList& indexes, const QMap<QString, FS::FileIdentity>& identities);
+    shared_qobject_ptr<SharingActionTask> restoreOriginal(const QModelIndexList& indexes);
     QMap<QString, FS::FileIdentity> fileIdentities(const QModelIndexList& indexes) const;
 
    signals:
@@ -308,6 +311,8 @@ class ResourceFolderModel : public QAbstractListModel {
     std::atomic<int> m_nextResolutionTicket = 0;
 
    private:
+    // the task for a sharing action, which refreshes the rows once it finished
+    shared_qobject_ptr<SharingActionTask> sharingTask(const QString& status, QList<SharingActionTask::Job> jobs);
     // the shared store keeping the records of this instance's links, if the store can be changed
     ContentStore* sharedStore() const;
     QString gameRelativePath(const QString& path) const;

@@ -422,41 +422,63 @@ bool ResourceFolderModel::canRestoreOriginal(const QModelIndex& index) const
     return ref && store->hasIntactCopy(ref->hash);
 }
 
-QStringList ResourceFolderModel::keepLocal(const QModelIndexList& indexes)
+shared_qobject_ptr<SharingActionTask> ResourceFolderModel::sharingTask(const QString& status, QList<SharingActionTask::Job> jobs)
 {
-    QStringList errors;
+    auto task = makeShared<SharingActionTask>(status, std::move(jobs));
+    connect(task.get(), &Task::finished, this, [this] {
+        if (rowCount({}) > 0) {
+            emit dataChanged(index(0, 0), index(rowCount({}) - 1, columnCount({}) - 1));
+        }
+        update();
+    });
+    return task;
+}
+
+shared_qobject_ptr<SharingActionTask> ResourceFolderModel::keepLocal(const QModelIndexList& indexes)
+{
+    QList<SharingActionTask::Job> jobs;
     auto* store = sharedStore();
     for (const auto& index : indexes) {
         if (!store || index.column() != 0 || !canKeepLocal(index)) {
             continue;
         }
-        const auto path = at(index.row()).fileinfo().absoluteFilePath();
-        if (auto kept = SharedContent::keepLocal(*store, m_instance, sharedDestination(path)); !kept) {
-            errors.append(kept.error());
-        }
-        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+        const auto destination = sharedDestination(at(index.row()).fileinfo().absoluteFilePath());
+        jobs.append([store, instance = QPointer<BaseInstance>(m_instance), destination]() -> Result<SharingActionTask::FollowUp> {
+            TRY_INTO(const auto hash, SharedContent::unshareToLocal(*store, destination))
+            // kept local from now on, also through updates
+            return [instance, relativePath = destination.relativePath, hash] {
+                if (instance) {
+                    SharedContent::setExcluded(instance, relativePath, true, hash);
+                }
+            };
+        });
     }
-    return errors;
+    return sharingTask(tr("Making local copies"), std::move(jobs));
 }
 
-QStringList ResourceFolderModel::share(const QModelIndexList& indexes)
+shared_qobject_ptr<SharingActionTask> ResourceFolderModel::share(const QModelIndexList& indexes)
 {
-    QStringList errors;
+    QList<SharingActionTask::Job> jobs;
     auto* store = SharedContent::storeFor(m_instance);
     for (const auto& index : indexes) {
         if (!store || index.column() != 0 || !canShare(index)) {
             continue;
         }
-        const auto path = at(index.row()).fileinfo().absoluteFilePath();
-        const auto shared = SharedContent::shareFile(*store, m_instance, sharedDestination(path));
-        if (!shared) {
-            errors.append(shared.error());
-        } else if (shared->outcome == ContentStore::ConvertOutcome::Skipped) {
-            errors.append(shared->reason);
-        }
-        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+        const auto destination = sharedDestination(at(index.row()).fileinfo().absoluteFilePath());
+        jobs.append([store, instance = QPointer<BaseInstance>(m_instance), destination]() -> Result<SharingActionTask::FollowUp> {
+            TRY_INTO(const auto converted, store->convert(destination))
+            if (converted.outcome == ContentStore::ConvertOutcome::Skipped) {
+                return std::unexpected(converted.reason);
+            }
+            // shared now, so it isn't kept local anymore
+            return [instance, relativePath = destination.relativePath] {
+                if (instance) {
+                    SharedContent::setExcluded(instance, relativePath, false);
+                }
+            };
+        });
     }
-    return errors;
+    return sharingTask(tr("Sharing files"), std::move(jobs));
 }
 
 QMap<QString, FS::FileIdentity> ResourceFolderModel::fileIdentities(const QModelIndexList& indexes) const
@@ -471,9 +493,10 @@ QMap<QString, FS::FileIdentity> ResourceFolderModel::fileIdentities(const QModel
     return identities;
 }
 
-QStringList ResourceFolderModel::revertToShared(const QModelIndexList& indexes, const QMap<QString, FS::FileIdentity>& identities)
+shared_qobject_ptr<SharingActionTask> ResourceFolderModel::revertToShared(const QModelIndexList& indexes,
+                                                                          const QMap<QString, FS::FileIdentity>& identities)
 {
-    QStringList errors;
+    QList<SharingActionTask::Job> jobs;
     auto* store = SharedContent::storeFor(m_instance);
     for (const auto& index : indexes) {
         if (!store || index.column() != 0 || !canRevertToShared(index)) {
@@ -483,31 +506,41 @@ QStringList ResourceFolderModel::revertToShared(const QModelIndexList& indexes, 
         if (!identities.contains(path)) {
             continue;
         }
-        if (auto reverted = SharedContent::revertToShared(*store, m_instance, sharedDestination(path), identities[path]); !reverted) {
-            errors.append(reverted.error());
-        }
-        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+        const auto destination = sharedDestination(path);
+        // read here, as the instance's settings belong to this thread
+        const auto hash = SharedContent::unsharedFrom(m_instance, destination.relativePath);
+        jobs.append([store, instance = QPointer<BaseInstance>(m_instance), destination, hash,
+                     replaces = identities[path]]() -> Result<SharingActionTask::FollowUp> {
+            if (hash.isEmpty() || !store->hasIntactCopy(hash)) {
+                return std::unexpected(QString("The shared version of %1 is no longer stored").arg(destination.relativePath));
+            }
+            // the user confirmed discarding exactly this file
+            TRY(store->placeAt({ destination, hash, replaces }))
+            return [instance, relativePath = destination.relativePath] {
+                if (instance) {
+                    SharedContent::setExcluded(instance, relativePath, false);
+                }
+            };
+        });
     }
-    update();
-    return errors;
+    return sharingTask(tr("Reverting to the shared versions"), std::move(jobs));
 }
 
-QStringList ResourceFolderModel::restoreOriginal(const QModelIndexList& indexes)
+shared_qobject_ptr<SharingActionTask> ResourceFolderModel::restoreOriginal(const QModelIndexList& indexes)
 {
-    QStringList errors;
+    QList<SharingActionTask::Job> jobs;
     auto* store = sharedStore();
     for (const auto& index : indexes) {
         if (!store || index.column() != 0 || !canRestoreOriginal(index)) {
             continue;
         }
-        const auto path = at(index.row()).fileinfo().absoluteFilePath();
-        if (auto restored = store->restoreOriginal(sharedDestination(path).key()); !restored) {
-            errors.append(restored.error());
-        }
-        emit dataChanged(index.siblingAtColumn(0), index.siblingAtColumn(columnCount({}) - 1));
+        const auto key = sharedDestination(at(index.row()).fileinfo().absoluteFilePath()).key();
+        jobs.append([store, key]() -> Result<SharingActionTask::FollowUp> {
+            TRY(store->restoreOriginal(key))
+            return SharingActionTask::FollowUp();
+        });
     }
-    update();
-    return errors;
+    return sharingTask(tr("Restoring the original files"), std::move(jobs));
 }
 
 void ResourceFolderModel::noteSharedFileRemoved(const QString& path) const

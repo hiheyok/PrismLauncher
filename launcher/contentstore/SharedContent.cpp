@@ -220,13 +220,18 @@ QString unsharedFrom(BaseInstance* instance, const QString& relativePath)
     return instance ? unsharedFromMap(instance).value(exclusionKey(relativePath)).toString() : QString();
 }
 
+Result<QString> unshareToLocal(ContentStore& store, const ContentStore::Destination& destination)
+{
+    if (!store.refAt(destination.key())) {
+        return QString();
+    }
+    TRY_INTO(const auto unshared, store.unshare(destination.key()))
+    return unshared.hash;
+}
+
 Result<> keepLocal(ContentStore& store, BaseInstance* instance, const ContentStore::Destination& destination)
 {
-    QString hash;
-    if (store.refAt(destination.key())) {
-        TRY_INTO(const auto unshared, store.unshare(destination.key()))
-        hash = unshared.hash;
-    }
+    TRY_INTO(const auto hash, unshareToLocal(store, destination))
     setExcluded(instance, destination.relativePath, true, hash);
     return {};
 }

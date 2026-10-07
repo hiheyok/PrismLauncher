@@ -2,13 +2,16 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThread>
 
 #include "FileSystem.h"
 #include "FileSystemPrimitives.h"
 #include "contentstore/ContentStore.h"
 #include "contentstore/SharedContent.h"
+#include "contentstore/SharingActionTask.h"
 #include "contentstore/WriterGuard.h"
 
 namespace {
@@ -156,6 +159,27 @@ class ShareInstanceTest : public QObject {
         QCOMPARE(calls, 2);
         // the other one is untouched
         QCOMPARE(m_store->table().refs().size(), 1);
+    }
+
+    void test_sharingActionsRunInTheBackground()
+    {
+        QThread* jobThread = nullptr;
+        QThread* followUpThread = nullptr;
+        QList<SharingActionTask::Job> jobs{
+            [&jobThread, &followUpThread]() -> Result<SharingActionTask::FollowUp> {
+                jobThread = QThread::currentThread();
+                return [&followUpThread] { followUpThread = QThread::currentThread(); };
+            },
+            []() -> Result<SharingActionTask::FollowUp> { return std::unexpected(QString("could not")); },
+        };
+        SharingActionTask task("Testing", jobs);
+        QSignalSpy finished(&task, &Task::finished);
+        task.start();
+        QVERIFY(finished.wait(5000));
+        // the file work off the UI thread, what changes settings on it
+        QVERIFY(jobThread && jobThread != QThread::currentThread());
+        QCOMPARE(followUpThread, QThread::currentThread());
+        QCOMPARE(task.errors(), QStringList{ "could not" });
     }
 
     void test_shareFileSharesOne()
