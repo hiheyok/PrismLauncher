@@ -42,6 +42,7 @@
 #include "minecraft/mod/ResourceFolderModel.h"
 #include "ui/GuiUtil.h"
 
+#include <QEventLoop>
 #include <QHeaderView>
 #include <QKeyEvent>
 #include <QMenu>
@@ -475,6 +476,12 @@ void ExternalResourcesPage::runSharingAction(const shared_qobject_ptr<SharingAct
     // the files are copied or hashed in the background, while the dialog keeps the page from changing them meanwhile
     ProgressDialog dialog(this);
     dialog.execWithTask(task.get());
+    // its follow-ups record which files are kept local, so it always finishes before it goes
+    if (task->isRunning()) {
+        QEventLoop loop;
+        connect(task.get(), &Task::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
     if (!task->errors().isEmpty()) {
         CustomMessageBox::selectable(this, errorTitle, task->errors().join('\n'), QMessageBox::Warning)->show();
     }
