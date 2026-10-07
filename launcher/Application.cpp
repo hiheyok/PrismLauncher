@@ -1000,12 +1000,7 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
 
     // Shared content store
     if (m_settings->get("SharedStoreEnabled").toBool()) {
-        const auto storeDir = QDir(m_dataPath).absoluteFilePath(m_settings->get("SharedStoreDir").toString());
-        m_contentStore = std::make_unique<ContentStore>(storeDir, m_dataPath);
-        m_contentStore->setLinkMode(ContentStore::linkModeFromSetting(m_settings->get("SharedStoreLinkMode").toString()));
-        m_contentStore->setPrivilegedLinker(ContentStore::defaultPrivilegedLinker());
-        m_contentStore->open();
-        qInfo() << "<> Shared store" << storeDir << "opened with state" << static_cast<int>(m_contentStore->state());
+        m_contentStore = openContentStore(contentStoreDir(m_settings->get("SharedStoreDir").toString()));
     }
 
 #ifdef Q_OS_MACOS
@@ -1297,6 +1292,35 @@ Application::Application(int& argc, char** argv) : QApplication(argc, argv)
         m_themeManager->applyCurrentlySelectedTheme(true);
     }
     performMainStartupAction();
+}
+
+QString Application::contentStoreDir(const QString& setting) const
+{
+    return QDir::cleanPath(QDir(m_dataPath).absoluteFilePath(setting));
+}
+
+std::unique_ptr<ContentStore> Application::openContentStore(const QString& dir) const
+{
+    auto store = std::make_unique<ContentStore>(dir, m_dataPath);
+    store->setLinkMode(ContentStore::linkModeFromSetting(m_settings->get("SharedStoreLinkMode").toString()));
+    store->setPrivilegedLinker(ContentStore::defaultPrivilegedLinker());
+    store->open();
+    qInfo() << "<> Shared store" << dir << "opened with state" << static_cast<int>(store->state());
+    return store;
+}
+
+bool Application::contentStoreBusy() const
+{
+    return (m_contentStoreTask && m_contentStoreTask->isRunning()) || (m_shareTask && m_shareTask->isRunning()) || m_validation.isRunning();
+}
+
+void Application::replaceContentStore(std::unique_ptr<ContentStore> store)
+{
+    // the finished tasks still point at the store before
+    m_contentStoreTask.reset();
+    m_shareTask.reset();
+    m_shareQueue.clear();
+    m_contentStore = std::move(store);
 }
 
 void Application::shareExistingInstances()

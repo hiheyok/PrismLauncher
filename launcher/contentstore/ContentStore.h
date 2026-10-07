@@ -392,6 +392,13 @@ class ContentStore {
         int links = 0;
         // what the links would take as separate copies, beyond one copy of each file
         qint64 savedBytes = 0;
+        // stored files no link uses, which are destroyed once that is safe
+        int unusedFiles = 0;
+        qint64 unusedBytes = 0;
+        // of those, the ones that wait for a complete scan of the instances, as a symbolic link could still point at them
+        int unusedAwaitingScan = 0;
+        // and the ones found in the store without a record, which are kept for OrphanAgeSeconds in any case
+        int unusedFound = 0;
     };
     Stats stats() const;
 
@@ -400,6 +407,16 @@ class ContentStore {
 
     // A hint that the file at key was removed, such as from a folder watcher. Marks its link missing if it is gone.
     void noteRemoved(const RefKey& key);
+
+    // The links this store records, as they are now; safe while other threads change the store
+    QList<std::pair<RefKey, Ref>> refsSnapshot() const;
+    // The folder of an owner, or an empty string for an owner this store doesn't know
+    QString ownerRoot(const QString& owner) const;
+    // Whether no placement or pending validation is in progress, so the store's links can be moved elsewhere
+    bool isIdle() const;
+    // Records that the link at key now belongs to another store, after it was replaced by that store's link. Fails while
+    // the path still holds this store's link, so a link is never forgotten while it is still here.
+    Result<> releaseMoved(const RefKey& key);
 
     // How long a link must be found gone before it is released, and how old a found file must be before it is destroyed
     static constexpr qint64 LossGraceSeconds = qint64(24) * 60 * 60;

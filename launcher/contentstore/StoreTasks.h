@@ -2,9 +2,11 @@
 
 #include <QFutureWatcher>
 
+#include <atomic>
 #include <optional>
 
 #include "contentstore/ContentStore.h"
+#include "contentstore/SharedContent.h"
 #include "tasks/Task.h"
 
 // Checks the recorded links of this launcher in the background, see ContentStore::verify
@@ -42,6 +44,33 @@ class DeepVerifyStoreTask : public Task {
     ContentStore* m_store;
     std::optional<ContentStore::DeepVerifyReport> m_report;
     QFutureWatcher<Result<ContentStore::DeepVerifyReport>> m_watcher;
+};
+
+// Moves the shared files from one store to another in the background, see SharedContent::moveShares
+class MoveStoreTask : public Task {
+    Q_OBJECT
+   public:
+    MoveStoreTask(ContentStore* from, ContentStore* to) : m_from(from), m_to(to) {}
+    // the background work uses both stores, which must outlive it
+    ~MoveStoreTask() override
+    {
+        m_aborted = true;
+        m_watcher.waitForFinished();
+    }
+
+    // Not stopped halfway: the launcher then uses the new store, and links left in the old one would have nobody to look
+    // after them
+    const std::optional<SharedContent::MoveReport>& report() const { return m_report; }
+
+   protected:
+    void executeTask() override;
+
+   private:
+    ContentStore* m_from;
+    ContentStore* m_to;
+    std::optional<SharedContent::MoveReport> m_report;
+    std::atomic<bool> m_aborted = false;
+    QFutureWatcher<SharedContent::MoveReport> m_watcher;
 };
 
 // Scans the folders of this launcher's owners in the background, see ContentStore::reconcile

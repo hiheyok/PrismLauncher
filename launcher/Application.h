@@ -130,6 +130,14 @@ class Application : public QApplication {
 
     // The shared content store, or nullptr if sharing is disabled
     ContentStore* contentStore() const { return m_contentStore.get(); }
+    // The folder a SharedStoreDir setting means: relative to the data folder unless absolute
+    QString contentStoreDir(const QString& setting) const;
+    // Opens a store in dir with the launcher's settings, without using it yet
+    std::unique_ptr<ContentStore> openContentStore(const QString& dir) const;
+    // Whether work in the background uses the store, such as a reconciliation, so it can't be replaced right now
+    bool contentStoreBusy() const;
+    // Uses this store from now on, such as after its folder changed; the one before is closed
+    void replaceContentStore(std::unique_ptr<ContentStore> store);
 
     ExternalUpdater* updater() { return m_updater.get(); }
 

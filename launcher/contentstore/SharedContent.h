@@ -140,6 +140,28 @@ Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
                                               const ContentStore::Destination& destination,
                                               const ContentStore::ConvertOptions& options = {});
 
+// What moving the shared files from one store to another did
+struct MoveReport {
+    int moved = 0;
+    // links whose file was gone, which the old store released
+    int gone = 0;
+    // links of other launchers that use the old store, which are left to them
+    int otherLaunchers = 0;
+    // the files that couldn't be moved, with why; each still works through the old store
+    QStringList failed;
+    bool stopped = false;
+};
+
+// Moves every link of this launcher that the store from records to the store to, such as when the store's folder changes: each linked file is
+// stored in to, then linked from there in its place (a hard link where to allows it), and only then released in from.
+// Files kept local aren't linked, so they are left as they are. progress is told how many links are done, and stops the
+// move by returning false. A file that fails keeps working through from, which then still records it.
+MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress = {});
+
+// The files in the content folders of these game folders that are symbolic links into dir, such as into a store that is
+// about to be deleted
+QStringList linksInto(const QString& dir, const QStringList& gameRoots);
+
 // Removes a resource file of an instance: a symbolic link is first turned into a local copy, so a trashed file never
 // points into the store, then remove runs, and only if it succeeded the link is forgotten
 Result<> removeFile(ContentStore& store, const RefKey& key, const std::function<bool()>& remove);

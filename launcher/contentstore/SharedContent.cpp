@@ -336,6 +336,84 @@ Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
     return converted;
 }
 
+MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress)
+{
+    MoveReport report;
+    const auto refs = from.refsSnapshot();
+    for (int done = 0; done < refs.size(); done++) {
+        if (progress && !progress(done, static_cast<int>(refs.size()))) {
+            report.stopped = true;
+            break;
+        }
+        const auto& key = refs[done].first;
+        // other launchers using the old store keep their links there
+        if (!key.owner.startsWith(from.clientId() + ':')) {
+            report.otherLaunchers++;
+            continue;
+        }
+        const auto root = from.ownerRoot(key.owner);
+        if (root.isEmpty()) {
+            continue;
+        }
+        const ContentStore::Destination destination{ key.owner, root, key.relativePath };
+        const auto path = destination.path();
+        const QFileInfo info(path);
+        if (!info.exists() && !info.isSymbolicLink()) {
+            // nothing to move: the old store releases it like any link that is gone
+            if (from.forgetRemoved(key)) {
+                report.gone++;
+            }
+            continue;
+        }
+        // the bytes the instance sees, a damaged copy as it is: from the file a symbolic link points at, as copying checks
+        // the size of the file it reads, and a link's own size is that of its target's path
+        const auto source = info.isSymLink() ? info.symLinkTarget() : path;
+        const auto stored = to.ingest(source, ContentStore::IngestMode::Copy);
+        if (!stored) {
+            report.failed.append(QString("%1: %2").arg(path, stored.error()));
+            continue;
+        }
+        const auto identity = FS::identity(path);
+        if (!identity) {
+            report.failed.append(QString("%1: %2").arg(path, identity.error()));
+            continue;
+        }
+        // the old store's file isn't kept anyway, so where no link works a copy of it is better than nothing
+        ContentStore::PlaceOptions options;
+        options.allowCopy = true;
+        if (auto placed = to.placeAt({ destination, stored->hash, *identity }, options); !placed) {
+            report.failed.append(QString("%1: %2").arg(path, placed.error()));
+            continue;
+        }
+        if (auto released = from.releaseMoved(key); !released) {
+            report.failed.append(QString("%1: %2").arg(path, released.error()));
+            continue;
+        }
+        report.moved++;
+    }
+    if (progress && !report.stopped) {
+        progress(static_cast<int>(refs.size()), static_cast<int>(refs.size()));
+    }
+    return report;
+}
+
+QStringList linksInto(const QString& dir, const QStringList& gameRoots)
+{
+    const auto prefix = QDir::cleanPath(QFileInfo(dir).absoluteFilePath()) + '/';
+    QStringList links;
+    for (const auto& gameRoot : gameRoots) {
+        for (const auto& folder : contentFolders()) {
+            const QDir content(QDir(gameRoot).filePath(folder));
+            for (const auto& info : content.entryInfoList(QDir::Files | QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
+                if (info.isSymLink() && QDir::cleanPath(info.symLinkTarget()).startsWith(prefix, Qt::CaseInsensitive)) {
+                    links.append(info.absoluteFilePath());
+                }
+            }
+        }
+    }
+    return links;
+}
+
 int shareFreshFiles(ContentStore& store,
                     const QString& instanceId,
                     const QString& gameRoot,
