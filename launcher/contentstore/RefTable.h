@@ -119,12 +119,28 @@ struct Transaction {
     bool operator==(const Transaction&) const = default;
 };
 
-// The backup of a committed replacement that wasn't released yet
+// The backup of a committed replacement that wasn't released yet: a pending validation
 struct PendingBackup {
     RefKey key;
     QString backupPath;
     // kept until a validation (format version 2's pending validations); never removed by the ordinary release
     bool awaitValidation = false;
+    // the committed transaction, which tells what the backup and the path should hold; its id is 0 for a backup
+    // recorded before validations existed, which is released without one
+    Transaction transaction;
+    // the ref at the path before the commit, and the one the commit made; a restore puts the old one back
+    std::optional<Ref> oldRef;
+    std::optional<Ref> newRef;
+    // the backup turned out changed, and is being put back (RESTORE_BEGIN)
+    bool restoring = false;
+    // something newer is at the path, so the backup is being moved here instead (RESTORE_CONFLICT_BEGIN)
+    QString recoveredPath;
+    // The backup was validated, and renamed from here to backupPath, a name no other program knows, before it is
+    // removed by a later validation. A program that was about to open it gets a file that still has a name.
+    QString trashedFrom;
+    // The backup was removed, but a program opened it as it was; what it writes is saved here once it closed it, or when
+    // the launcher closes first. Never released without a look at that file.
+    QString salvagePath;
 
     bool operator==(const PendingBackup&) const = default;
 };
@@ -196,6 +212,18 @@ QJsonObject backup(qint64 transactionId,
 QJsonObject aborting(qint64 transactionId);
 // the backup of a committed replacement was removed
 QJsonObject backupReleased(qint64 transactionId);
+// The backup of a committed replacement changed, so the user's file goes back; written before anything on disk changes
+QJsonObject restoreBegin(qint64 transactionId);
+// the backup is back at the path: the ref the commit made is replaced by the one before it, and the validation ends
+QJsonObject restoreCommit(qint64 transactionId);
+// Something newer is at the path, so the backup is moved to recoveredPath instead; written before it is moved
+QJsonObject restoreConflictBegin(qint64 transactionId, const QString& recoveredPath);
+// the backup was moved to its recovered path; the refs stay as they are, and the validation ends
+QJsonObject restoreConflict(qint64 transactionId);
+// The validated backup is about to be renamed to trashPath, where a later validation removes it; written before
+QJsonObject backupTrashed(qint64 transactionId, const QString& trashPath);
+// A program opened the backup as it was removed; what it writes is saved at salvagePath. Written before it may write.
+QJsonObject backupSalvaging(qint64 transactionId, const QString& salvagePath);
 // The current generation turned out damaged: it is kept at retiredPath for the links that use it, and the hash has no
 // current generation until an intact copy is stored
 QJsonObject retire(const QString& hash, int generation, const QString& retiredPath);

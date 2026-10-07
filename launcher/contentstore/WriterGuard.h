@@ -45,6 +45,23 @@ class WriterGuard {
     // Ends the guard; anything waiting to open the file goes ahead
     void release();
 
+    // Whether no program can open the file for writing at all while it is guarded, as with a Windows pin. Only then can
+    // the guarded file be removed at once; a program can still reach a file under a Linux lease as it is removed.
+    bool keepsEveryWriterOut() const { return m_pin.has_value(); }
+
+    // For a file removed while guarded, after disturbed() found a program that opened it as it was removed: hands the
+    // removed file to a helper process, which keeps it for as long as that program needs, even after the launcher
+    // exited. The helper waits until the program closed the file, then saves what it holds at target, durably, trying
+    // again until that works: it never lets go of the only copy. The program may write once this returns. If no helper could be started,
+    // the guard keeps the file, and a later call, or the end of the guard, tries again. Only a Linux lease keeps hold of a removed file;
+    // elsewhere this does nothing.
+    Result<> salvage(const QString& target);
+    // Whether the helper of a salvage to target still runs; target may not exist until it is done
+    static bool salvageRunning(const QString& target);
+
+    // the descriptor holding a Linux lease, or -1, so tests can open the file the way another program would
+    int descriptorForTesting() const { return m_leaseDescriptor; }
+
     // Whether the backup of a replaced file must wait for a later validation instead of being removed right away.
     // Only a Windows pin keeps every program away until the backup is gone. A Linux lease can't: a program that opens
     // the file between the last look at the lease and its release gets the backup, and would lose its write if the
@@ -63,4 +80,6 @@ class WriterGuard {
     std::optional<FS::PinnedFile> m_pin;
     // the descriptor holding a Linux write lease
     int m_leaseDescriptor = -1;
+    // set while a removed file waits to be handed to a helper
+    QString m_salvageTarget;
 };

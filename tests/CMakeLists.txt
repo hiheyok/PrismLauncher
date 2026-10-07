@@ -42,6 +42,9 @@ ecm_add_test(Backup_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}
 ecm_add_test(WriterGuard_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME WriterGuard)
 
+ecm_add_test(Validation_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+    TEST_NAME Validation)
+
 ecm_add_test(GZip_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME GZip)
 

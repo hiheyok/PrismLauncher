@@ -1,3 +1,4 @@
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
@@ -45,7 +46,8 @@ std::unique_ptr<QProcess> holdOpen(const QString& path)
     auto process = std::make_unique<QProcess>();
     process->setStandardOutputFile(path, QIODevice::Append);
 #if defined(Q_OS_WIN)
-    process->start("cmd", { "/c", "ping -n 30 127.0.0.1" });
+    // prints nothing until it times out, and has no child process that would keep the file open after it is killed
+    process->start("waitfor", { "/t", "60", "PrismHoldOpenTest" });
 #else
     process->start("sleep", { "30" });
 #endif
@@ -220,15 +222,14 @@ class WriterGuardTest : public QObject {
     {
         WriterGuard::setBackupsNeedValidationForTesting(true);
         const auto hash = prepare();
+        const auto before = FS::fileId(userFile());
         std::unique_ptr<QProcess> writer;
-        QString backup;
-        // the replacement was checked; then, while it is cleaned up, another program opens the old file, now the
-        // backup. With a Linux lease it waits until the guard is released.
+        // the replacement was checked and committed; then, while it is cleaned up, another program opens the old file,
+        // now the backup. With a Linux lease it waits until the guard is released.
         m_store->setInterruptionForTesting([&](Step step) {
             if (step == Step::Committed && !writer) {
-                backup = backupPath();
 #if !defined(Q_OS_WIN)
-                writer = appendTo(backup, "late");
+                writer = appendTo(backupPath(), "late");
                 QTest::qWait(500);
 #endif
             }
@@ -240,28 +241,82 @@ class WriterGuardTest : public QObject {
         m_store->setInterruptionForTesting(nullptr);
         if (writer) {
             QVERIFY(finished(*writer));
-            // its write is in the backup, which still exists
-            QCOMPARE(readFile(backup), "common modlate");
+            // validated once the program closed it: changed, so the user's file is back, with the write
+            QCOMPARE(*m_store->validatePendingBackups(), 0);
+            QCOMPARE(FS::fileId(userFile()), before);
+            QCOMPARE(readFile(userFile()), "common modlate");
+            QVERIFY(!m_store->table().ref(destination().key()));
+        } else {
+            // pinned: no program could open it, and it was validated at the end of the batch
+            QVERIFY(sameFile(userFile(), m_store->objectPath(hash)));
         }
-        QVERIFY(sameFile(userFile(), m_store->objectPath(hash)));
-        QCOMPARE(m_store->table().pendingBackups().size(), 1);
-        QVERIFY(m_store->table().pendingBackups().first().awaitValidation);
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        QVERIFY(backupPath().isEmpty());
+    }
 
-        // neither the next operation nor a restart removes it
-        writeFile(path("downloads/other"), "other mod");
-        QVERIFY(m_store->ingest(path("downloads/other"), ContentStore::IngestMode::Copy));
-        const auto other = m_store->ingest(path("downloads/other"), ContentStore::IngestMode::Copy);
-        QVERIFY(other);
-        QVERIFY(m_store->placeAt({ { m_store->instanceOwner("a"), path("a"), "mods/other.jar" }, other->hash }));
-        QVERIFY(QFileInfo::exists(backup));
-        m_store.reset();
-        m_store = std::make_unique<ContentStore>(path("store"), path("data"));
-        QCOMPARE(m_store->open(), ContentStore::State::Writable);
-        QVERIFY(QFileInfo::exists(backup));
-        QCOMPARE(m_store->table().pendingBackups().size(), 1);
-        QVERIFY(m_store->table().pendingBackups().first().awaitValidation);
-        // and it keeps the store at format version 2
-        QCOMPARE(m_store->format().accessFor(1), StoreAccess::ReadOnly);
+    void test_salvageOfARemovedFile()
+    {
+#if !defined(Q_OS_LINUX)
+        QSKIP("Only a Linux lease keeps hold of a removed file");
+#else
+        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
+            QSKIP("This file system doesn't offer leases");
+        }
+        QVERIFY(writeFile(userFile(), "common mod"));
+        std::optional<WriterGuard> guard;
+        {
+            auto acquired = WriterGuard::acquire(userFile());
+            QVERIFY(acquired);
+            guard = std::move(*acquired);
+        }
+        QVERIFY(FS::deleteLink(userFile()));
+        // a program that looked the file up before it was removed opens it now, and only writes a while later
+        const auto removed = QString("/proc/%1/fd/%2").arg(QCoreApplication::applicationPid()).arg(guard->descriptorForTesting());
+        auto writer = std::make_unique<QProcess>();
+        writer->start("sh", { "-c", QString("exec 3>>'%1'; sleep 2; printf late >&3").arg(removed) });
+        QVERIFY(writer->waitForStarted());
+        QTest::qWait(300);
+        QVERIFY(guard->disturbed(userFile()));
+        // handed to a helper, which keeps the removed file after the guard, and this process, are gone
+        const auto target = path("recovered/mod.jar.1");
+        QVERIFY(guard->salvage(target));
+        guard.reset();
+        QVERIFY(WriterGuard::salvageRunning(target));
+        QVERIFY(finished(*writer));
+        QTRY_VERIFY_WITH_TIMEOUT(!WriterGuard::salvageRunning(target), 10000);
+        QCOMPARE(readFile(target), "common modlate");
+#endif
+    }
+
+    void test_failedSalvageIsRetried()
+    {
+#if !defined(Q_OS_LINUX)
+        QSKIP("Only a Linux lease keeps hold of a removed file");
+#else
+        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
+            QSKIP("This file system doesn't offer leases");
+        }
+        QVERIFY(writeFile(userFile(), "common mod"));
+        auto guard = WriterGuard::acquire(userFile());
+        QVERIFY(guard);
+        QVERIFY(FS::deleteLink(userFile()));
+        const auto removed = QString("/proc/%1/fd/%2").arg(QCoreApplication::applicationPid()).arg(guard->descriptorForTesting());
+        auto writer = appendTo(removed, "late");
+        QTest::qWait(300);
+        QVERIFY(guard->disturbed(userFile()));
+        const auto target = path("recovered/mod.jar.1");
+        QVERIFY(guard->salvage(target));
+        // the copy can't be saved for a while: nothing is given up
+        QVERIFY(QFile::setPermissions(path("recovered"), QFile::ReadOwner | QFile::ExeOwner));
+        QVERIFY(finished(*writer));
+        QTest::qWait(1500);
+        QVERIFY(WriterGuard::salvageRunning(target));
+        QVERIFY(!QFileInfo::exists(target));
+
+        makeWritable(path("recovered"));
+        QTRY_VERIFY_WITH_TIMEOUT(!WriterGuard::salvageRunning(target), 10000);
+        QCOMPARE(readFile(target), "common modlate");
+#endif
     }
 
     void test_pinnedBackupIsReleasedRightAway()

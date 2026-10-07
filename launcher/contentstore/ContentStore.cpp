@@ -186,6 +186,8 @@ ContentStore::State ContentStore::loadTable(State state)
     if (auto committed = commitLocked(records).and_then([this] { return finishBackupsLocked(); }); !committed) {
         return setState(State::Disabled, committed.error());
     }
+    // also catches writes to a backup while the launcher was closed
+    validateBackupsLocked();
     // only after the placements are finished, so links they committed protect their stored files
     if (auto committed = commitLocked(Recovery::finishPublications(m_table, objectsDir())); !committed) {
         return setState(State::Disabled, committed.error());
