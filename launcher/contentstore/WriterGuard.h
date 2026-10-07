@@ -45,6 +45,14 @@ class WriterGuard {
     // Ends the guard; anything waiting to open the file goes ahead
     void release();
 
+    // Whether the backup of a replaced file must wait for a later validation instead of being removed right away.
+    // Only a Windows pin keeps every program away until the backup is gone. A Linux lease can't: a program that opens
+    // the file between the last look at the lease and its release gets the backup, and would lose its write if the
+    // backup were removed. The answer is journaled with each backup, so it also holds after a restart.
+    static bool backupsNeedValidation();
+    // Overrides backupsNeedValidation for tests; nullopt restores it
+    static void setBackupsNeedValidationForTesting(std::optional<bool> needed);
+
     // With true, guards neither keep programs away nor notice them, like a system where a program writes between two
     // looks. Tests use it to check that such writes are still found.
     static void setUnenforcedForTesting(bool unenforced);

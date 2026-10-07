@@ -142,7 +142,10 @@ ContentStore::BackupSwap ContentStore::swapWithBackupLocked(Transaction& transac
     transaction.backupMethod = "link";
     transaction.backupPath = QDir(dir).filePath(QString(".prism-bak-%1").arg(transaction.id));
     transaction.expectedDigest = expectedDigest;
-    if (auto journaled = commitLocked({ RefRecord::backup(transaction.id, "link", transaction.backupPath, expectedDigest) }); !journaled) {
+    transaction.awaitValidation = WriterGuard::backupsNeedValidation();
+    if (auto journaled = commitLocked(
+            { RefRecord::backup(transaction.id, "link", transaction.backupPath, expectedDigest, transaction.awaitValidation) });
+        !journaled) {
         return fail(journaled.error(), BackupSwap::Unresolved);
     }
     if (interrupted(PlacementStep::BackupIntent)) {
@@ -156,7 +159,8 @@ ContentStore::BackupSwap ContentStore::swapWithBackupLocked(Transaction& transac
     // 2. the backup: another link to the old file, or the old file itself renamed aside where hard links don't work
     if (auto linked = FS::createHardLink(path, transaction.backupPath); !linked) {
         transaction.backupMethod = "rename";
-        if (auto journaled = commitLocked({ RefRecord::backup(transaction.id, "rename", transaction.backupPath, expectedDigest) });
+        if (auto journaled = commitLocked(
+                { RefRecord::backup(transaction.id, "rename", transaction.backupPath, expectedDigest, transaction.awaitValidation) });
             !journaled) {
             return fail(journaled.error(), BackupSwap::Unresolved);
         }
@@ -194,11 +198,12 @@ ContentStore::BackupSwap ContentStore::swapWithBackupLocked(Transaction& transac
     return BackupSwap::Swapped;
 }
 
-Result<> ContentStore::releaseBackupsLocked(const QSet<qint64>& kept)
+Result<> ContentStore::releaseBackupsLocked()
 {
     QList<QJsonObject> records;
     for (auto it = m_table.pendingBackups().begin(); it != m_table.pendingBackups().end(); ++it) {
-        if (kept.contains(it.key())) {
+        // a program may still write to it; only a validation may remove it
+        if (it->awaitValidation) {
             continue;
         }
         discardFile(it->backupPath);

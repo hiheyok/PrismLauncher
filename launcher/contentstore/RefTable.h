@@ -110,6 +110,9 @@ struct Transaction {
     QString backupMethod;
     QString backupPath;
     QString expectedDigest;
+    // the backup may only be removed once a later validation shows nothing wrote to it: where other programs can't be
+    // kept away until it is gone, one may still be about to write to it
+    bool awaitValidation = false;
     // the placement is being rolled back, so a crash restores the backup rather than checking it
     bool aborting = false;
 
@@ -120,6 +123,8 @@ struct Transaction {
 struct PendingBackup {
     RefKey key;
     QString backupPath;
+    // kept until a validation (format version 2's pending validations); never removed by the ordinary release
+    bool awaitValidation = false;
 
     bool operator==(const PendingBackup&) const = default;
 };
@@ -182,7 +187,11 @@ QJsonObject freeze(const QString& conversion, const Freeze& freeze);
 // the conversion finished, one way or another: completed, restored, skipped or failed
 QJsonObject unfreeze(const QString& conversion, const QString& outcome);
 // About to keep the file at the transaction's path aside as a backup; written before anything on disk changes
-QJsonObject backup(qint64 transactionId, const QString& method, const QString& backupPath, const QString& expectedDigest);
+QJsonObject backup(qint64 transactionId,
+                   const QString& method,
+                   const QString& backupPath,
+                   const QString& expectedDigest,
+                   bool awaitValidation);
 // the replacement is being rolled back
 QJsonObject aborting(qint64 transactionId);
 // the backup of a committed replacement was removed

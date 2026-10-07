@@ -484,8 +484,8 @@ class ContentStore {
                                     std::optional<WriterGuard>& guard,
                                     QString& error);
     // Removes the backups of committed replacements
-    // Removes the backups of committed replacements, except those of the transactions in kept
-    Result<> releaseBackupsLocked(const QSet<qint64>& kept = {});
+    // Removes the backups of committed replacements, except those that await a validation
+    Result<> releaseBackupsLocked();
     // Finishes replacements with a backup that a crash interrupted, then releases backups left behind
     Result<> finishBackupsLocked();
     Result<> lowerWriterVersionLocked();

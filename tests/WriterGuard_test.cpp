@@ -115,6 +115,7 @@ class WriterGuardTest : public QObject {
 
     void cleanup()
     {
+        WriterGuard::setBackupsNeedValidationForTesting(std::nullopt);
         if (m_store) {
             m_store->setInterruptionForTesting(nullptr);
         }
@@ -199,23 +200,30 @@ class WriterGuardTest : public QObject {
         QVERIFY(!QFileInfo::exists(backupPath()));
     }
 
-    void test_openBeforeTheReleaseKeepsTheBackup()
+    void test_backupsAwaitValidationWithoutAPin()
     {
-#if !defined(Q_OS_LINUX)
-        QSKIP("Only a Linux lease makes a late writer wait on the backup");
+#if defined(Q_OS_WIN)
+        QVERIFY(!WriterGuard::backupsNeedValidation());
 #else
-        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
-            QSKIP("This file system doesn't offer leases");
-        }
+        QVERIFY(WriterGuard::backupsNeedValidation());
+#endif
+    }
+
+    void test_lateWriterKeepsItsWrite()
+    {
+        WriterGuard::setBackupsNeedValidationForTesting(true);
         const auto hash = prepare();
         std::unique_ptr<QProcess> writer;
         QString backup;
-        // the replacement was checked and committed; then another program opens the old file, now the backup
+        // the replacement was checked; then, while it is cleaned up, another program opens the old file, now the
+        // backup. With a Linux lease it waits until the guard is released.
         m_store->setInterruptionForTesting([&](Step step) {
             if (step == Step::Committed && !writer) {
                 backup = backupPath();
+#if !defined(Q_OS_WIN)
                 writer = appendTo(backup, "late");
                 QTest::qWait(500);
+#endif
             }
             return false;
         });
@@ -223,13 +231,41 @@ class WriterGuardTest : public QObject {
         QVERIFY(identity);
         QVERIFY(m_store->placeAt({ destination(), hash, *identity, hash }));
         m_store->setInterruptionForTesting(nullptr);
-        QVERIFY(writer);
-        QVERIFY(writer->waitForFinished(10000));
-        // its write went into the backup, which is still there and pending
-        QCOMPARE(readFile(backup), "common modlate");
-        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        if (writer) {
+            QVERIFY(writer->waitForFinished(10000));
+            // its write is in the backup, which still exists
+            QCOMPARE(readFile(backup), "common modlate");
+        }
         QVERIFY(sameFile(userFile(), m_store->objectPath(hash)));
-#endif
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        QVERIFY(m_store->table().pendingBackups().first().awaitValidation);
+
+        // neither the next operation nor a restart removes it
+        writeFile(path("downloads/other"), "other mod");
+        QVERIFY(m_store->ingest(path("downloads/other"), ContentStore::IngestMode::Copy));
+        const auto other = m_store->ingest(path("downloads/other"), ContentStore::IngestMode::Copy);
+        QVERIFY(other);
+        QVERIFY(m_store->placeAt({ { m_store->instanceOwner("a"), path("a"), "mods/other.jar" }, other->hash }));
+        QVERIFY(QFileInfo::exists(backup));
+        m_store.reset();
+        m_store = std::make_unique<ContentStore>(path("store"), path("data"));
+        QCOMPARE(m_store->open(), ContentStore::State::Writable);
+        QVERIFY(QFileInfo::exists(backup));
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        QVERIFY(m_store->table().pendingBackups().first().awaitValidation);
+        // and it keeps the store at format version 2
+        QCOMPARE(m_store->format().accessFor(1), StoreAccess::ReadOnly);
+    }
+
+    void test_pinnedBackupIsReleasedRightAway()
+    {
+        WriterGuard::setBackupsNeedValidationForTesting(false);
+        const auto hash = prepare();
+        const auto identity = FS::identity(userFile());
+        QVERIFY(identity);
+        QVERIFY(m_store->placeAt({ destination(), hash, *identity, hash }));
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        QVERIFY(backupPath().isEmpty());
     }
 
     void test_networkDrivesNeedConfirmation()

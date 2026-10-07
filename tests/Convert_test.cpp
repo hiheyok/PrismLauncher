@@ -13,6 +13,7 @@
 #include "FileSystemPrimitives.h"
 #include "contentstore/ContentStore.h"
 #include "contentstore/StoreFormat.h"
+#include "contentstore/WriterGuard.h"
 
 namespace {
 bool writeFile(const QString& path, const QByteArray& data)
@@ -103,7 +104,13 @@ class ConvertTest : public QObject {
     StoreAccess accessForVersion1() const { return m_store->format().accessFor(1); }
 
    private slots:
-    void initTestCase() { QVERIFY(m_dir.isValid()); }
+    void initTestCase()
+    {
+        QVERIFY(m_dir.isValid());
+        // backups are released right after the commit, as on Windows; WriterGuard_test covers those that await a
+        // validation
+        WriterGuard::setBackupsNeedValidationForTesting(false);
+    }
 
     void init()
     {

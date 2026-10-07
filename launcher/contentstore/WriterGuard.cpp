@@ -25,6 +25,7 @@
 
 namespace {
 bool g_unenforced = false;
+std::optional<bool> g_backupsNeedValidation;
 
 #if defined(Q_OS_LINUX)
 // Lease breaks are noticed by asking for the lease, not by a signal: the signal is one nothing uses, and ignored, as the
@@ -133,6 +134,23 @@ WriterGuard::Tier WriterGuard::tierFor([[maybe_unused]] const QString& path)
 #else
     return Tier::BestEffort;
 #endif
+}
+
+bool WriterGuard::backupsNeedValidation()
+{
+    if (g_backupsNeedValidation) {
+        return *g_backupsNeedValidation;
+    }
+#if defined(Q_OS_WIN)
+    return false;
+#else
+    return true;
+#endif
+}
+
+void WriterGuard::setBackupsNeedValidationForTesting(std::optional<bool> needed)
+{
+    g_backupsNeedValidation = needed;
 }
 
 void WriterGuard::setUnenforcedForTesting(bool unenforced)

@@ -127,7 +127,13 @@ class BackupTest : public QObject {
     }
 
    private slots:
-    void initTestCase() { QVERIFY(m_dir.isValid()); }
+    void initTestCase()
+    {
+        QVERIFY(m_dir.isValid());
+        // backups are released right after the commit, as on Windows; WriterGuard_test covers those that await a
+        // validation
+        WriterGuard::setBackupsNeedValidationForTesting(false);
+    }
 
     void init()
     {

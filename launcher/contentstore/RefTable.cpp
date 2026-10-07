@@ -127,6 +127,9 @@ QJsonObject transactionToJson(const Transaction& transaction)
         json["backupMethod"] = transaction.backupMethod;
         json["backupPath"] = transaction.backupPath;
         json["expectedDigest"] = transaction.expectedDigest;
+        if (transaction.awaitValidation) {
+            json["awaitValidation"] = true;
+        }
     }
     if (transaction.aborting) {
         json["aborting"] = true;
@@ -160,6 +163,7 @@ Result<Transaction> transactionFromJson(const QJsonObject& json)
     transaction.backupMethod = json["backupMethod"].toString();
     transaction.backupPath = json["backupPath"].toString();
     transaction.expectedDigest = json["expectedDigest"].toString();
+    transaction.awaitValidation = json["awaitValidation"].toBool();
     transaction.aborting = json["aborting"].toBool();
     return transaction;
 }
@@ -362,13 +366,21 @@ QJsonObject unfreeze(const QString& conversion, const QString& outcome)
     return { { "type", "unfreeze" }, { "conversion", conversion }, { "outcome", outcome } };
 }
 
-QJsonObject backup(qint64 transactionId, const QString& method, const QString& backupPath, const QString& expectedDigest)
+QJsonObject backup(qint64 transactionId,
+                   const QString& method,
+                   const QString& backupPath,
+                   const QString& expectedDigest,
+                   bool awaitValidation)
 {
-    return { { "type", "backup" },
-             { "transaction", transactionId },
-             { "method", method },
-             { "backupPath", backupPath },
-             { "expectedDigest", expectedDigest } };
+    QJsonObject record{ { "type", "backup" },
+                        { "transaction", transactionId },
+                        { "method", method },
+                        { "backupPath", backupPath },
+                        { "expectedDigest", expectedDigest } };
+    if (awaitValidation) {
+        record["awaitValidation"] = true;
+    }
+    return record;
 }
 
 QJsonObject aborting(qint64 transactionId)
@@ -439,7 +451,7 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
     }
     if (!transaction.backupPath.isEmpty()) {
         // the backup stays until it is removed and that is recorded
-        m_pendingBackups[transactionId] = { transaction.key, transaction.backupPath };
+        m_pendingBackups[transactionId] = { transaction.key, transaction.backupPath, transaction.awaitValidation };
     }
     m_transactions.erase(it);
     return {};
@@ -598,6 +610,7 @@ Result<> RefTable::apply(const QJsonObject& record)
             it->backupMethod = record["method"].toString();
             it->backupPath = record["backupPath"].toString();
             it->expectedDigest = record["expectedDigest"].toString();
+            it->awaitValidation = record["awaitValidation"].toBool();
         }
         return {};
     }
@@ -793,7 +806,11 @@ QJsonObject RefTable::snapshot() const
     if (!m_pendingBackups.isEmpty()) {
         QJsonObject pending;
         for (auto it = m_pendingBackups.begin(); it != m_pendingBackups.end(); ++it) {
-            pending[QString::number(it.key())] = QJsonObject{ { "key", keyToJson(it->key) }, { "backupPath", it->backupPath } };
+            QJsonObject json{ { "key", keyToJson(it->key) }, { "backupPath", it->backupPath } };
+            if (it->awaitValidation) {
+                json["awaitValidation"] = true;
+            }
+            pending[QString::number(it.key())] = json;
         }
         snapshot["pendingBackups"] = pending;
     }
@@ -875,7 +892,8 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
     const auto pending = snapshot["pendingBackups"].toObject();
     for (auto it = pending.begin(); it != pending.end(); ++it) {
         const auto json = it->toObject();
-        table.m_pendingBackups[it.key().toLongLong()] = { keyFromJson(json["key"].toObject()), json["backupPath"].toString() };
+        table.m_pendingBackups[it.key().toLongLong()] = { keyFromJson(json["key"].toObject()), json["backupPath"].toString(),
+                                                          json["awaitValidation"].toBool() };
     }
     const auto freezes = snapshot["freezes"].toObject();
     for (auto it = freezes.begin(); it != freezes.end(); ++it) {
