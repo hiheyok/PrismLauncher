@@ -476,6 +476,8 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
 
     // 4. Swap each new file into place, if the destination still holds what was recorded
     records.clear();
+    // the guards of replaced user's files, held until their backups are released
+    std::vector<WriterGuard> guards;
 
     // Minecraft refuses symbolically linked packs unless their target is allowed, so that is durable before any swap
     QMap<QString, Result<>> allowedRoots;
@@ -502,9 +504,11 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         if (!item.placement.backupDigest.isEmpty() && item.oldIsRegularFile && item.transaction.oldIdentity) {
             // the user's own file: kept aside until it is proven that nothing wrote to it meanwhile
             QString error;
-            switch (swapWithBackupLocked(item.transaction, item.path, item.placement.backupDigest, error)) {
+            std::optional<WriterGuard> guard;
+            switch (swapWithBackupLocked(item.transaction, item.path, item.placement.backupDigest, guard, error)) {
                 case BackupSwap::Swapped:
                     item.swapped = true;
+                    guards.push_back(std::move(*guard));
                     continue;
                 case BackupSwap::RolledBack:
                     item.fail(error);
@@ -593,6 +597,8 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         return interruptedResults();
     }
     if (!m_table.pendingBackups().isEmpty()) {
+        // only backups no program could reach are released here, while their guards are still held; the others
+        // await a validation
         if (auto released = releaseBackupsLocked(); !released) {
             qWarning() << "Shared store:" << released.error();
         }

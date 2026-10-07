@@ -123,6 +123,11 @@ class PinnedFile {
 Result<PinnedFile> pinFile(const QString& path);
 
 /**
+ * Whether path is on a network drive, where programs on other computers can change files unnoticed.
+ */
+bool isNetworkVolume(const QString& path);
+
+/**
  * Writes the file's data to disk. Must be called before making the file read-only, as Windows needs write access.
  */
 Result<> flushFile(const QString& path);

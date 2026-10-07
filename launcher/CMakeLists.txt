@@ -80,6 +80,8 @@ set(CORE_SOURCES
     contentstore/Placement.cpp
     contentstore/Convert.cpp
     contentstore/Backup.cpp
+    contentstore/WriterGuard.h
+    contentstore/WriterGuard.cpp
     contentstore/Reconcile.cpp
     contentstore/Repair.cpp
     contentstore/SharedContent.h

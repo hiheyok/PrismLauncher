@@ -9,6 +9,7 @@
 #include "FileSystem.h"
 #include "FileSystemPrimitives.h"
 #include "contentstore/ContentStore.h"
+#include "contentstore/WriterGuard.h"
 
 namespace {
 bool writeFile(const QString& path, const QByteArray& data)
@@ -126,7 +127,13 @@ class BackupTest : public QObject {
     }
 
    private slots:
-    void initTestCase() { QVERIFY(m_dir.isValid()); }
+    void initTestCase()
+    {
+        QVERIFY(m_dir.isValid());
+        // backups are released right after the commit, as on Windows; WriterGuard_test covers those that await a
+        // validation
+        WriterGuard::setBackupsNeedValidationForTesting(false);
+    }
 
     void init()
     {
@@ -147,6 +154,7 @@ class BackupTest : public QObject {
     {
         FS::Testing::setFaultHook(nullptr);
         FS::Testing::setCallRecorder(nullptr);
+        WriterGuard::setUnenforcedForTesting(false);
         if (m_store) {
             m_store->setInterruptionForTesting(nullptr);
         }
@@ -197,7 +205,9 @@ class BackupTest : public QObject {
     {
         const auto hash = prepare("common mod");
         const auto before = FS::fileId(userFile());
-        // another program writes to the user's file right after the swap, through the file itself
+        // another program writes to the user's file right after the swap, through the file itself, unnoticed where
+        // writers are only looked for
+        WriterGuard::setUnenforcedForTesting(true);
         m_store->setInterruptionForTesting([this](Step step) {
             if (step == Step::Swapped) {
                 appendFile(backupPath(), " and a late write");
@@ -444,6 +454,7 @@ class BackupTest : public QObject {
         const auto hash = prepare();
         const auto before = FS::fileId(userFile());
         // the write is noticed, then the launcher stops before putting the file back
+        WriterGuard::setUnenforcedForTesting(true);
         m_store->setInterruptionForTesting([this](Step step) {
             if (step == Step::Swapped) {
                 appendFile(backupPath(), " and a late write");

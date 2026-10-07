@@ -22,6 +22,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
+#if defined(Q_OS_MACOS)
+#include <sys/mount.h>
+#include <sys/param.h>
+#else
+#include <sys/vfs.h>
+#endif
 #endif
 
 namespace fs = std::filesystem;
@@ -538,6 +544,49 @@ Result<PinnedFile> pinFile(const QString& path)
     Q_UNUSED(path)
 #endif
     return pinned;
+}
+
+bool isNetworkVolume(const QString& path)
+{
+    const auto existing = nearestExistentAncestor(path);
+#if defined(Q_OS_WIN)
+    if (existing.startsWith("//") || existing.startsWith("\\\\")) {
+        return true;
+    }
+    std::wstring volume(MAX_PATH + 1, L'\0');
+    if (!GetVolumePathNameW(nativePath(existing).c_str(), volume.data(), static_cast<DWORD>(volume.size()))) {
+        return false;
+    }
+    return GetDriveTypeW(volume.c_str()) == DRIVE_REMOTE;
+#elif defined(Q_OS_MACOS)
+    struct statfs info{};
+    if (statfs(encodedPath(existing).constData(), &info) != 0) {
+        return false;
+    }
+    const QString type = QString::fromLatin1(info.f_fstypename);
+    return type == "nfs" || type == "smbfs" || type == "afpfs" || type == "webdav" || type == "cifs";
+#elif defined(Q_OS_LINUX)
+    struct statfs info{};
+    if (statfs(encodedPath(existing).constData(), &info) != 0) {
+        return false;
+    }
+    // NFS, SMB, SMB2, CIFS, Coda, AFS and 9P (also used for WSL's Windows drives). FUSE isn't counted: it is mostly
+    // local file systems such as ntfs-3g, and sshfs can't be told apart from them here.
+    switch (static_cast<unsigned long>(info.f_type)) {
+        case 0x6969UL:
+        case 0x517BUL:
+        case 0xFE534D42UL:
+        case 0xFF534D42UL:
+        case 0x73757245UL:
+        case 0x5346414FUL:
+        case 0x01021997UL:
+            return true;
+        default:
+            return false;
+    }
+#else
+    return false;
+#endif
 }
 
 Result<> flushFile(const QString& path)

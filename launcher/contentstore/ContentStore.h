@@ -20,6 +20,7 @@
 #include "contentstore/RefTable.h"
 #include "contentstore/StoreFormat.h"
 #include "contentstore/StoreLock.h"
+#include "contentstore/WriterGuard.h"
 
 // A store of files shared between instances, kept once and linked into each instance that uses them.
 //
@@ -226,6 +227,9 @@ class ContentStore {
     struct ConvertOptions {
         // convert a file with other hard links by copying it, leaving those links as they are
         bool adoptHardLinked = false;
+        // convert files on a network drive, which programs on other computers may be writing to unnoticed; only after
+        // the user confirmed that no other computer uses them
+        bool allowNetworkVolumes = false;
     };
 
     enum class ConvertOutcome : std::uint8_t {
@@ -472,8 +476,15 @@ class ContentStore {
         Interrupted,
     };
     // Swaps the transaction's new file in with the backup protocol
-    BackupSwap swapWithBackupLocked(Transaction& transaction, const QString& path, const QString& expectedDigest, QString& error);
+    // Swaps the transaction's new file in with the backup protocol. guard keeps other programs away from the old file;
+    // the caller holds it until the backup is released.
+    BackupSwap swapWithBackupLocked(Transaction& transaction,
+                                    const QString& path,
+                                    const QString& expectedDigest,
+                                    std::optional<WriterGuard>& guard,
+                                    QString& error);
     // Removes the backups of committed replacements
+    // Removes the backups of committed replacements, except those that await a validation
     Result<> releaseBackupsLocked();
     // Finishes replacements with a backup that a crash interrupted, then releases backups left behind
     Result<> finishBackupsLocked();
