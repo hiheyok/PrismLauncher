@@ -78,7 +78,7 @@ class ProgressDialog : public QDialog {
 
     void changeStatus(const QString& status);
     void changeProgress(qint64 current, qint64 total);
-    void changeStepProgress(TaskStepProgress const& task_progress);
+    void changeStepProgress(const TaskStepProgress& task_progress);
 
    private slots:
     void on_skipButton_clicked(bool checked);
@@ -86,10 +86,12 @@ class ProgressDialog : public QDialog {
    protected:
     virtual void keyPressEvent(QKeyEvent* e);
     virtual void closeEvent(QCloseEvent* e);
+    // Escape rejects without a close event, so it is refused the same way while the task runs
+    virtual void reject();
 
    private:
     bool handleImmediateResult(QDialog::DialogCode& result);
-    void addTaskProgress(TaskStepProgress const& progress);
+    void addTaskProgress(const TaskStepProgress& progress);
 
    private:
     Ui::ProgressDialog* ui;

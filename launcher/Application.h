@@ -43,11 +43,13 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QFlag>
+#include <QFutureWatcher>
 #include <QIcon>
 #include <QMutex>
 #include <QUrl>
 
 #include "QObjectPtr.h"
+#include "contentstore/ContentStore.h"
 
 #include "minecraft/auth/MinecraftAccount.h"
 
@@ -71,7 +73,6 @@ class BaseDetachedToolFactory;
 class TranslationsModel;
 class ITheme;
 class ThemeManager;
-class ContentStore;
 class Task;
 class IconTheme;
 class BaseInstance;
@@ -231,6 +232,14 @@ class Application : public QApplication {
     void controllerFinished();
 
    private:
+    // "Share all content" for every instance, when SharedStoreShareExisting is on, one after the other
+    void shareExistingInstances();
+    void shareNextInstance();
+    // validates the backups of shared files that were in use before, in the background
+    void validatePendingBackups();
+    // shows the user's files that validations put back or saved aside, once there is a main window
+    void reportRestoredFiles(const QList<ContentStore::RestoredFile>& restoredFiles);
+
     static bool handleDataMigration(const QString& currentData, const QString& oldData, const QString& name, const QString& configFile);
     bool createSetupWizard();
     void performMainStartupAction();
@@ -268,8 +277,13 @@ class Application : public QApplication {
     QSet<QString> m_features;
     std::unique_ptr<ThemeManager> m_themeManager;
     std::unique_ptr<ContentStore> m_contentStore;
-    // declared after the store, so it finishes before the store closes
+    // declared after the store, so they finish before the store closes
     shared_qobject_ptr<Task> m_contentStoreTask;
+    shared_qobject_ptr<Task> m_shareTask;
+    QStringList m_shareQueue;
+    // validates in the background, and gives back the user's files it put back or saved aside
+    QFutureWatcher<QList<ContentStore::RestoredFile>> m_validation;
+    QList<ContentStore::RestoredFile> m_restoredFiles;
 
     QMap<QString, std::shared_ptr<BaseProfilerFactory>> m_profilers;
 

@@ -182,9 +182,11 @@ class ValidationTest : public QObject {
     {
         const auto hash = replaceAndStop();
         QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        QVERIFY(m_store->hasPendingValidations());
         reopen();
         QCOMPARE(*m_store->validatePendingBackups(), 0);
         QVERIFY(m_store->table().pendingBackups().isEmpty());
+        QVERIFY(!m_store->hasPendingValidations());
         QVERIFY(leftovers().isEmpty());
         QVERIFY(sameFile(userFile(), m_store->objectPath(hash)));
         QCOMPARE(m_store->table().ref(destination().key())->hash, hash);

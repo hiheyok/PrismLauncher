@@ -122,6 +122,7 @@
    <addaction name="actionViewSelectedInstFolder"/>
    <addaction name="actionExportInstance"/>
    <addaction name="actionCopyInstance"/>
+   <addaction name="actionShareAllContent"/>
    <addaction name="actionDeleteInstance"/>
    <addaction name="actionCreateInstanceShortcut"/>
   </widget>
@@ -151,6 +152,7 @@
     <addaction name="actionViewSelectedInstFolder"/>
     <addaction name="actionExportInstance"/>
     <addaction name="actionCopyInstance"/>
+    <addaction name="actionShareAllContent"/>
     <addaction name="actionDeleteInstance"/>
     <addaction name="actionCreateInstanceShortcut"/>
     <addaction name="separator"/>
@@ -446,6 +448,17 @@
    </property>
    <property name="shortcut">
     <string>Ctrl+D</string>
+   </property>
+  </action>
+  <action name="actionShareAllContent">
+   <property name="icon">
+    <iconset theme="copy"/>
+   </property>
+   <property name="text">
+    <string>S&amp;hare All Content...</string>
+   </property>
+   <property name="toolTip">
+    <string>Share the mods, resource packs and shader packs of the selected instance with other instances, so each is stored only once.</string>
    </property>
   </action>
   <action name="actionExportInstance">

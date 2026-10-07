@@ -45,6 +45,12 @@ ecm_add_test(WriterGuard_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_M
 ecm_add_test(Validation_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME Validation)
 
+ecm_add_test(ShareInstance_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+    TEST_NAME ShareInstance)
+
+ecm_add_test(ProgressDialog_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Widgets
+    TEST_NAME ProgressDialog)
+
 ecm_add_test(GZip_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME GZip)
 

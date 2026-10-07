@@ -120,17 +120,20 @@ Result<> ContentStore::finishFreezesLocked()
 Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& destination, const ConvertOptions& options)
 {
     const auto path = destination.path();
-    const auto skipped = [](const QString& reason) { return ConvertResult{ ConvertOutcome::Skipped, reason, {} }; };
+    const auto skipped = [](ConvertSkip skip, const QString& reason) { return ConvertResult{ ConvertOutcome::Skipped, reason, {}, skip }; };
+    // a copy in place of the user's file would save nothing, so a file that can't be linked stays as it is
+    PlaceOptions placeOptions;
+    placeOptions.allowCopy = false;
     if (!isWritable()) {
         return std::unexpected(QString("The shared store can't be changed"));
     }
     const QFileInfo info(path);
     if (info.isSymbolicLink() || !info.isFile()) {
-        return skipped(QString("%1 isn't a regular file").arg(path));
+        return skipped(ConvertSkip::NotAFile, QString("%1 isn't a regular file").arg(path));
     }
     if (!options.allowNetworkVolumes && FS::isNetworkVolume(path)) {
         // programs on other computers can change it without this one noticing
-        return skipped(QString("%1 is on a network drive, so converting it needs confirmation").arg(path));
+        return skipped(ConvertSkip::NetworkVolume, QString("%1 is on a network drive, so converting it needs confirmation").arg(path));
     }
 
     // already a stored file: a recorded link, or one nobody recorded yet
@@ -139,14 +142,14 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
             return ConvertResult{ ConvertOutcome::AlreadyShared, {}, *hash };
         }
         TRY_INTO(const auto identity, FS::identity(path))
-        TRY(placeAt({ destination, *hash, identity }))
+        TRY(placeAt({ destination, *hash, identity }, placeOptions))
         return ConvertResult{ ConvertOutcome::Shared, {}, *hash };
     }
 
     // other hard links may be another program's or another instance's own files, which must stay as they are
     const auto links = FS::hardLinkCount(path);
     if (links != 1 && !options.adoptHardLinked) {
-        return skipped(QString("%1 has other hard links").arg(path));
+        return skipped(ConvertSkip::HardLinked, QString("%1 has other hard links").arg(path));
     }
     const bool linkIn = links == 1 && FS::sameVolume(path, temporaryDir());
     // The user's own file becoming the stored file is written to disk first: once pinned, flushing it would need write
@@ -158,7 +161,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
     // wouldn't stop a writer that opened it before (only enforced on Windows)
     auto pin = FS::pinFile(path);
     if (!pin) {
-        return skipped(pin.error());
+        return skipped(ConvertSkip::InUse, pin.error());
     }
     TRY_INTO(const auto before, FS::identity(path))
 
@@ -172,7 +175,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
             return std::unexpected(interruptedError());
         }
         // the user's file is kept aside until it is proven that nothing wrote to it since it was copied
-        TRY(placeAt({ destination, stored->hash, before, stored->hash }))
+        TRY(placeAt({ destination, stored->hash, before, stored->hash }, placeOptions))
         return ConvertResult{ ConvertOutcome::Shared, {}, stored->hash };
     }
 
@@ -221,7 +224,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
             finish("completed");
             return std::unexpected(QString("%1 was replaced while it was being shared").arg(path));
         }
-        auto placed = placeAt({ destination, hash, identity });
+        auto placed = placeAt({ destination, hash, identity }, placeOptions);
         finish("completed");
         if (!placed) {
             // still the stored file, which reconciliation records as a link
@@ -239,7 +242,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
         return std::unexpected(QString("%1 changed while it was being shared").arg(path));
     }
     // kept aside until it is proven that nothing wrote to it since it was hashed
-    auto placed = placeAt({ destination, hash, current, hash });
+    auto placed = placeAt({ destination, hash, current, hash }, placeOptions);
     finish(placed ? "completed" : "failed");
     if (!placed) {
         return std::unexpected(placed.error());

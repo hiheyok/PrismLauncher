@@ -35,12 +35,14 @@
 
 #include "ExternalResourcesPage.h"
 #include "ui/dialogs/CustomMessageBox.h"
+#include "ui/dialogs/ProgressDialog.h"
 #include "ui_ExternalResourcesPage.h"
 
 #include "DesktopServices.h"
 #include "minecraft/mod/ResourceFolderModel.h"
 #include "ui/GuiUtil.h"
 
+#include <QEventLoop>
 #include <QHeaderView>
 #include <QKeyEvent>
 #include <QMenu>
@@ -127,6 +129,7 @@ ExternalResourcesPage::ExternalResourcesPage(MinecraftInstance* instance, Resour
     connect(m_ui->actionLockUpdates, &QAction::triggered, this, &ExternalResourcesPage::lockUpdates);
     connect(m_ui->actionUnlockUpdates, &QAction::triggered, this, &ExternalResourcesPage::unlockUpdates);
     connect(m_ui->actionKeepLocal, &QAction::triggered, this, &ExternalResourcesPage::keepLocal);
+    connect(m_ui->actionShare, &QAction::triggered, this, &ExternalResourcesPage::share);
     connect(m_ui->actionRevertToShared, &QAction::triggered, this, &ExternalResourcesPage::revertToShared);
     connect(m_ui->actionRestoreOriginal, &QAction::triggered, this, &ExternalResourcesPage::restoreOriginal);
     // whether this instance shares its files at all, while the launcher shares files
@@ -410,6 +413,7 @@ void ExternalResourcesPage::updateActions()
         return std::ranges::any_of(selection, [&](const QModelIndex& index) { return index.column() == 0 && (m_model->*can)(index); });
     };
     m_ui->actionKeepLocal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canKeepLocal));
+    m_ui->actionShare->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canShare));
     m_ui->actionRevertToShared->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRevertToShared));
     m_ui->actionRestoreOriginal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRestoreOriginal));
     m_ui->actionExportMetadata->setEnabled(!m_model->empty());
@@ -464,14 +468,41 @@ void ExternalResourcesPage::updateSharingActions()
     m_ui->actionKeepLocal->setVisible(linked);
     m_ui->actionRestoreOriginal->setVisible(linked);
     m_ui->actionRevertToShared->setVisible(SharedContent::storeFor(m_instance) != nullptr);
+    m_ui->actionShare->setVisible(SharedContent::storeFor(m_instance) != nullptr);
+}
+
+void ExternalResourcesPage::runSharingAction(const shared_qobject_ptr<SharingActionTask>& task, const QString& errorTitle)
+{
+    // the files are copied or hashed in the background, while the dialog keeps the page from changing them meanwhile
+    ProgressDialog dialog(this);
+    dialog.execWithTask(task.get());
+    // its follow-ups record which files are kept local, so it always finishes before it goes
+    if (task->isRunning()) {
+        QEventLoop loop;
+        connect(task.get(), &Task::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+    if (!task->errors().isEmpty()) {
+        CustomMessageBox::selectable(this, errorTitle, task->errors().join('\n'), QMessageBox::Warning)->show();
+    }
 }
 
 void ExternalResourcesPage::keepLocal()
 {
     const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
-    if (const auto errors = m_model->keepLocal(selection); !errors.isEmpty()) {
-        CustomMessageBox::selectable(this, tr("Could not keep local copies"), errors.join('\n'), QMessageBox::Warning)->show();
+    runSharingAction(m_model->keepLocal(selection), tr("Could not keep local copies"));
+    updateActions();
+}
+
+void ExternalResourcesPage::share()
+{
+    if (m_instance->isRunning()) {
+        CustomMessageBox::selectable(this, tr("Could not share"), tr("Close the instance before sharing its files."), QMessageBox::Warning)
+            ->show();
+        return;
     }
+    const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
+    runSharingAction(m_model->share(selection), tr("Could not share"));
     updateActions();
 }
 
@@ -500,17 +531,13 @@ void ExternalResourcesPage::revertToShared()
     if (response != QMessageBox::Yes) {
         return;
     }
-    if (const auto errors = m_model->revertToShared(reverting, identities); !errors.isEmpty()) {
-        CustomMessageBox::selectable(this, tr("Could not revert to the shared versions"), errors.join('\n'), QMessageBox::Warning)->show();
-    }
+    runSharingAction(m_model->revertToShared(reverting, identities), tr("Could not revert to the shared versions"));
     updateActions();
 }
 
 void ExternalResourcesPage::restoreOriginal()
 {
     const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
-    if (const auto errors = m_model->restoreOriginal(selection); !errors.isEmpty()) {
-        CustomMessageBox::selectable(this, tr("Could not restore the original files"), errors.join('\n'), QMessageBox::Warning)->show();
-    }
+    runSharingAction(m_model->restoreOriginal(selection), tr("Could not restore the original files"));
     updateActions();
 }
