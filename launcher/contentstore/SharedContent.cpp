@@ -13,6 +13,7 @@
 #include "FileSystem.h"
 #include "FileSystemPrimitives.h"
 #include "InstanceList.h"
+#include "contentstore/ObjectFiles.h"
 #include "settings/SettingsObject.h"
 
 namespace SharedContent {
@@ -337,12 +338,19 @@ Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
 }
 
 namespace {
-std::function<void(const QString&)> s_beforeMoveCopy;
+std::function<void(MoveStep, const QString&)> s_moveHook;
+
+void moveStep(MoveStep step, const QString& path)
+{
+    if (s_moveHook) {
+        s_moveHook(step, path);
+    }
+}
 }  // namespace
 
-void setBeforeMoveCopyForTesting(std::function<void(const QString& path)> hook)
+void setMoveHookForTesting(std::function<void(MoveStep step, const QString& path)> hook)
 {
-    s_beforeMoveCopy = std::move(hook);
+    s_moveHook = std::move(hook);
 }
 
 MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress)
@@ -374,29 +382,55 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
             }
             continue;
         }
-        // taken before the copy: a file put there meanwhile, such as by an update, then differs from it, and isn't replaced
-        // with the bytes before
-        const auto identity = FS::identity(path);
-        if (!identity) {
-            report.failed.append(QString("%1: %2").arg(path, identity.error()));
-            continue;
-        }
-        if (s_beforeMoveCopy) {
-            s_beforeMoveCopy(path);
-        }
         // the bytes the instance sees, a damaged copy as it is: from the file a symbolic link points at, as copying checks
         // the size of the file it reads, and a link's own size is that of its target's path
-        const auto source = info.isSymLink() ? info.symLinkTarget() : path;
-        const auto stored = to.ingest(source, ContentStore::IngestMode::Copy);
-        if (!stored) {
-            report.failed.append(QString("%1: %2").arg(path, stored.error()));
-            continue;
-        }
+        const bool symbolic = info.isSymLink();
+        const auto source = symbolic ? info.symLinkTarget() : path;
         // the old store's file isn't kept anyway, so where no link works a copy of it is better than nothing
         ContentStore::PlaceOptions options;
         options.allowCopy = true;
-        if (auto placed = to.placeAt({ destination, stored->hash, *identity }, options); !placed) {
-            report.failed.append(QString("%1: %2").arg(path, placed.error()));
+        QString error;
+        bool placedCurrent = false;
+        // A file put at the path meanwhile, such as by an update, differs from the identity taken before the copy, and
+        // isn't replaced. A symbolic link stays the same while its target changes, so that is hashed again once replaced:
+        // what changed is still there, and is copied again. If it keeps changing, the old store's file isn't released.
+        constexpr int attempts = 3;
+        for (int attempt = 0; attempt < attempts && !placedCurrent; attempt++) {
+            const auto identity = FS::identity(path);
+            if (!identity) {
+                error = identity.error();
+                break;
+            }
+            moveStep(MoveStep::BeforeCopy, path);
+            const auto stored = to.ingest(source, ContentStore::IngestMode::Copy);
+            if (!stored) {
+                error = stored.error();
+                break;
+            }
+            moveStep(MoveStep::Copied, path);
+            // after the first attempt, the path holds the new store's own link, which needs no confirmation
+            const auto replaces = attempt == 0 ? std::optional(*identity) : std::nullopt;
+            if (auto placed = to.placeAt({ destination, stored->hash, replaces }, options); !placed) {
+                error = placed.error();
+                break;
+            }
+            moveStep(MoveStep::Placed, path);
+            if (!symbolic) {
+                placedCurrent = true;
+                break;
+            }
+            const auto now = ObjectFiles::sha256(source);
+            if (!now) {
+                error = now.error();
+                break;
+            }
+            placedCurrent = *now == stored->hash;
+            if (!placedCurrent) {
+                error = QString("%1 kept changing while it was moved").arg(source);
+            }
+        }
+        if (!placedCurrent) {
+            report.failed.append(QString("%1: %2").arg(path, error));
             continue;
         }
         if (auto released = from.releaseMoved(key); !released) {

@@ -164,8 +164,9 @@ QStringList linksInto(const QString& dir, const QStringList& gameRoots);
 // Whether one folder is the other or within it, links resolved: a store can't move into or out of itself, as removing the
 // old folder would remove the new one with it
 bool foldersOverlap(const QString& first, const QString& second);
-// Called by moveShares before it copies each file, such as to change it then
-void setBeforeMoveCopyForTesting(std::function<void(const QString& path)> hook);
+// The steps of moving each file, where a test may change it
+enum class MoveStep { BeforeCopy, Copied, Placed };
+void setMoveHookForTesting(std::function<void(MoveStep step, const QString& path)> hook);
 
 // Removes a resource file of an instance: a symbolic link is first turned into a local copy, so a trashed file never
 // points into the store, then remove runs, and only if it succeeded the link is forgotten
