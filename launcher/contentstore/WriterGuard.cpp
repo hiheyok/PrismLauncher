@@ -118,8 +118,9 @@ bool saveCopy(int source, const char* partial, const char* target, const char* d
             close(descriptor);
         }
     }
-    // tries for a day at most, so a folder that never becomes writable doesn't keep it forever
-    for (int attempt = 0; attempt < 24 * 60 * 60; attempt++) {
+    // Waits for the program for as long as it keeps the file open. Saving is tried for a day at most, so a folder that
+    // never becomes writable doesn't keep it forever.
+    for (int failures = 0; failures < 24 * 60 * 60;) {
         // A lease is only granted while no other program has the file open: the program closed it. Held while copying,
         // so the copy is consistent.
         if (fcntl(source, F_SETLEASE, F_WRLCK) != 0) {
@@ -131,6 +132,7 @@ bool saveCopy(int source, const char* partial, const char* target, const char* d
         if (saved) {
             _exit(0);
         }
+        failures++;
         sleepMs(1000);
     }
     _exit(1);
