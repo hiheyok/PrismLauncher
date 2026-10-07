@@ -48,15 +48,6 @@ class ConversionGuard {
     QFile::Permissions m_permissions;
     bool m_active = true;
 };
-
-constexpr bool g_canReplaceUserFiles =
-#if defined(Q_OS_WIN)
-    // pinning the file keeps writers away until it is replaced
-    true;
-#else
-    // needs the backup protocol, so a write landing during the swap isn't lost
-    false;
-#endif
 }  // namespace
 
 StoreFormat ContentStore::format() const
@@ -82,7 +73,8 @@ Result<> ContentStore::raiseWriterVersionLocked()
 Result<> ContentStore::lowerWriterVersionLocked()
 {
     if (m_state != State::Writable || m_format.minWriterVersion != StoreFormat::ConversionWriterVersion || m_format.minReaderVersion > 1 ||
-        m_format.hasUnknownFields || !m_table.freezes().isEmpty() || !m_table.transactions().isEmpty()) {
+        m_format.hasUnknownFields || !m_table.freezes().isEmpty() || !m_table.transactions().isEmpty() ||
+        !m_table.pendingBackups().isEmpty()) {
         return {};
     }
     auto lowered = m_format;
@@ -153,9 +145,6 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
         return skipped(QString("%1 has other hard links").arg(path));
     }
     const bool linkIn = links == 1 && FS::sameVolume(path, temporaryDir());
-    if (!linkIn && !g_canReplaceUserFiles) {
-        return skipped(QString("Replacing %1 isn't supported on this system yet").arg(path));
-    }
     // The user's own file becoming the stored file is written to disk first: once pinned, flushing it would need write
     // access the pin refuses.
     if (linkIn) {
@@ -178,7 +167,8 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
         if (interrupted(PlacementStep::Ingested)) {
             return std::unexpected(interruptedError());
         }
-        TRY(placeAt({ destination, stored->hash, before }))
+        // the user's file is kept aside until it is proven that nothing wrote to it since it was copied
+        TRY(placeAt({ destination, stored->hash, before, stored->hash }))
         return ConvertResult{ ConvertOutcome::Shared, {}, stored->hash };
     }
 
@@ -238,17 +228,14 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
 
     // another file is stored, an identical one or a copy: the user's file is replaced by a link to it
     guard.restore();
-    if (!g_canReplaceUserFiles) {
-        finish("skipped");
-        return skipped(QString("Replacing %1 isn't supported on this system yet").arg(path));
-    }
     TRY_INTO(const auto current, FS::identity(path))
     // only the permissions changed since the file was hashed; a write would have changed its size or time
     if (current.fileId != before.fileId || current.size != before.size || current.modifiedTime != before.modifiedTime) {
         finish("failed");
         return std::unexpected(QString("%1 changed while it was being shared").arg(path));
     }
-    auto placed = placeAt({ destination, hash, current });
+    // kept aside until it is proven that nothing wrote to it since it was hashed
+    auto placed = placeAt({ destination, hash, current, hash });
     finish(placed ? "completed" : "failed");
     if (!placed) {
         return std::unexpected(placed.error());

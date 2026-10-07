@@ -288,6 +288,18 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
             }
         }
 
+        // a backup is state only format version 2 understands, so the store needs it before the batch begins
+        const bool backups =
+            std::ranges::any_of(items, [](const Item& item) { return item.begun && !item.placement.backupDigest.isEmpty(); });
+        if (backups) {
+            if (auto raised = raiseWriterVersionLocked(); !raised) {
+                for (auto& item : items) {
+                    item.begun = false;
+                    item.fail(raised.error());
+                }
+                records.clear();
+            }
+        }
         if (!records.isEmpty()) {
             if (auto committed = commitLocked(records); !committed) {
                 for (auto& item : items) {
@@ -487,6 +499,25 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         if (!item.prepared) {
             continue;
         }
+        if (!item.placement.backupDigest.isEmpty() && item.oldIsRegularFile && item.transaction.oldIdentity) {
+            // the user's own file: kept aside until it is proven that nothing wrote to it meanwhile
+            QString error;
+            switch (swapWithBackupLocked(item.transaction, item.path, item.placement.backupDigest, error)) {
+                case BackupSwap::Swapped:
+                    item.swapped = true;
+                    continue;
+                case BackupSwap::RolledBack:
+                    item.fail(error);
+                    records.append(RefRecord::abort(item.transaction.id));
+                    continue;
+                case BackupSwap::Unresolved:
+                    // left open, for when the store opens again
+                    item.fail(error);
+                    continue;
+                case BackupSwap::Interrupted:
+                    return interruptedResults();
+            }
+        }
         const auto swap = [&item]() -> Result<> {
             // no other program can start writing to the destination between the check and the swap
             std::optional<FS::PinnedFile> pin;
@@ -554,6 +585,16 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
                 }
             }
             return results();
+        }
+    }
+
+    // the backups of replacements, now that they committed
+    if (interrupted(PlacementStep::Committed)) {
+        return interruptedResults();
+    }
+    if (!m_table.pendingBackups().isEmpty()) {
+        if (auto released = releaseBackupsLocked(); !released) {
+            qWarning() << "Shared store:" << released.error();
         }
     }
 

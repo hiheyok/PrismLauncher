@@ -36,6 +36,9 @@ ecm_add_test(ExportZip_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJ
 ecm_add_test(Convert_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME Convert)
 
+ecm_add_test(Backup_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+    TEST_NAME Backup)
+
 ecm_add_test(GZip_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
     TEST_NAME GZip)
 

@@ -120,6 +120,9 @@ class ContentStore {
         // The file the user chose to replace, when the destination doesn't hold a link to the store. The placement
         // fails if anything else is there by the time it is replaced.
         std::optional<FS::FileIdentity> replaces;
+        // The SHA-256 the replaced file must still have when it was replaced, when it is the user's own file that another
+        // program may be writing to: it is kept aside until that is proven, and put back otherwise (the backup protocol).
+        QString backupDigest;
     };
 
     struct PlaceOptions {
@@ -210,6 +213,14 @@ class ContentStore {
         Frozen,
         // a conversion stored the file, and is about to link it
         Ingested,
+        // a replacement recorded that it keeps the old file aside
+        BackupIntent,
+        // the old file was kept aside
+        BackedUp,
+        // a replacement found the old file changed and recorded that it puts it back
+        Aborting,
+        // placements committed, before the backups of replacements are removed
+        Committed,
     };
 
     struct ConvertOptions {
@@ -274,8 +285,8 @@ class ContentStore {
 
     // Shares a file that already is in an instance ("Share all content"): it becomes the stored file, or a link to an
     // identical one. Either the file ends up shared or it is left exactly as it was, permissions included. A file with
-    // other hard links is skipped unless adopted by copying. Replacing the user's file with another one needs the backup
-    // protocol on POSIX, so until it exists such conversions are skipped there.
+    // other hard links is skipped unless adopted by copying. Replacing the user's file with another one keeps it aside
+    // until it is proven unchanged (the backup protocol).
     Result<ConvertResult> convert(const Destination& destination, const ConvertOptions& options);
     Result<ConvertResult> convert(const Destination& destination) { return convert(destination, ConvertOptions{}); }
 
@@ -449,6 +460,23 @@ class ContentStore {
     Result<> finishFreezesLocked();
     // Makes the store need format version 2 to change it, before the first state only that version understands
     Result<> raiseWriterVersionLocked();
+
+    enum class BackupSwap : std::uint8_t {
+        // swapped, with the old file kept aside and proven unchanged
+        Swapped,
+        // not swapped, or swapped back: the old file is in place again
+        RolledBack,
+        // it couldn't be told or put right; the open transaction is finished when the store opens again
+        Unresolved,
+        // stopped by a test
+        Interrupted,
+    };
+    // Swaps the transaction's new file in with the backup protocol
+    BackupSwap swapWithBackupLocked(Transaction& transaction, const QString& path, const QString& expectedDigest, QString& error);
+    // Removes the backups of committed replacements
+    Result<> releaseBackupsLocked();
+    // Finishes replacements with a backup that a crash interrupted, then releases backups left behind
+    Result<> finishBackupsLocked();
     Result<> lowerWriterVersionLocked();
 
     QString m_storeDir;

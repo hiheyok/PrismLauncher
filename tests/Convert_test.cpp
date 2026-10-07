@@ -56,7 +56,8 @@ int writerVersionIn(const QString& path, const QString& field = {})
     return json["minWriterVersion"].toInt();
 }
 
-constexpr bool g_replacesUserFiles =
+// Only Windows can keep other programs from writing to a file while it is converted
+constexpr bool g_pinsFiles =
 #if defined(Q_OS_WIN)
     true;
 #else
@@ -172,15 +173,12 @@ class ConvertTest : public QObject {
 
         const auto converted = m_store->convert(destination("mods/mod.jar"));
         QVERIFY2(converted, converted ? "" : qPrintable(converted.error()));
-        if (g_replacesUserFiles) {
-            QCOMPARE(converted->outcome, Outcome::Shared);
-            QVERIFY(sameFile(file("mods/mod.jar"), m_store->objectPath(hash)));
-        } else {
-            // replacing the user's file needs the backup protocol here
-            QCOMPARE(converted->outcome, Outcome::Skipped);
-            QVERIFY(!sameFile(file("mods/mod.jar"), m_store->objectPath(hash)));
-            QCOMPARE(QFile::permissions(file("mods/mod.jar")), permissions);
-        }
+        QCOMPARE(converted->outcome, Outcome::Shared);
+        QVERIFY(sameFile(file("mods/mod.jar"), m_store->objectPath(hash)));
+        Q_UNUSED(permissions)
+        // the backup of the user's file is gone once the replacement committed
+        QVERIFY(QDir(path("a/mods")).entryList({ ".prism-*" }, QDir::AllEntries | QDir::Hidden).isEmpty());
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
         QCOMPARE(readFile(file("mods/mod.jar")), "common mod");
         QVERIFY(m_store->table().freezes().isEmpty());
     }
@@ -197,15 +195,11 @@ class ConvertTest : public QObject {
         const auto converted = m_store->convert(destination("mods/mod.jar"));
         FS::Testing::setFaultHook(nullptr);
         QVERIFY2(converted, converted ? "" : qPrintable(converted.error()));
-        if (g_replacesUserFiles) {
-            QCOMPARE(converted->outcome, Outcome::Shared);
-            QVERIFY(sameFile(file("mods/mod.jar"), m_store->objectPath(sha256Of("the user's mod"))));
-        } else {
-            // the copy would replace the user's file, which needs the backup protocol here
-            QCOMPARE(converted->outcome, Outcome::Skipped);
-            QCOMPARE(FS::fileId(file("mods/mod.jar")), before);
-            QCOMPARE(QFile::permissions(file("mods/mod.jar")), permissions);
-        }
+        // the copy replaces the user's file, kept aside until it was proven unchanged
+        QCOMPARE(converted->outcome, Outcome::Shared);
+        QVERIFY(sameFile(file("mods/mod.jar"), m_store->objectPath(sha256Of("the user's mod"))));
+        QVERIFY(FS::fileId(file("mods/mod.jar")) != before);
+        Q_UNUSED(permissions)
         QCOMPARE(readFile(file("mods/mod.jar")), "the user's mod");
         QVERIFY(m_store->table().freezes().isEmpty());
     }
@@ -234,19 +228,16 @@ class ConvertTest : public QObject {
         options.adoptHardLinked = true;
         const auto converted = m_store->convert(destination("mods/mod.jar"), options);
         QVERIFY2(converted, converted ? "" : qPrintable(converted.error()));
-        QCOMPARE(converted->outcome, g_replacesUserFiles ? Outcome::Shared : Outcome::Skipped);
+        QCOMPARE(converted->outcome, Outcome::Shared);
         // the other link is never made read-only or changed
         QCOMPARE(QFile::permissions(path("elsewhere/mod.jar")), permissions);
         QVERIFY(QFileInfo(path("elsewhere/mod.jar")).isWritable());
         QCOMPARE(readFile(path("elsewhere/mod.jar")), "shared with another program");
-        QCOMPARE(sameFile(file("mods/mod.jar"), path("elsewhere/mod.jar")), !g_replacesUserFiles);
+        QVERIFY(!sameFile(file("mods/mod.jar"), path("elsewhere/mod.jar")));
     }
 
-    void test_noEditDuringACopy()
+    void test_editDuringACopyIsKept()
     {
-        if (!g_replacesUserFiles) {
-            QSKIP("Copy mode conversions need the backup protocol on this system");
-        }
         QVERIFY(writeFile(file("mods/mod.jar"), "original"));
         QVERIFY(FS::createHardLink(file("mods/mod.jar"), path("elsewhere/mod.jar")));
         const auto target = file("mods/mod.jar");
@@ -265,18 +256,22 @@ class ConvertTest : public QObject {
         options.adoptHardLinked = true;
         const auto converted = m_store->convert(destination("mods/mod.jar"), options);
         QVERIFY(tried);
-        // the file is pinned from the copy until it is replaced, so no other program can write to it meanwhile
-        QVERIFY(!edited);
-        QVERIFY2(converted, converted ? "" : qPrintable(converted.error()));
-        QCOMPARE(readFile(file("mods/mod.jar")), "original");
-        QCOMPARE(readFile(path("elsewhere/mod.jar")), "original");
+        if (g_pinsFiles) {
+            // the file is pinned from the copy until it is replaced, so no other program can write to it meanwhile
+            QVERIFY(!edited);
+            QVERIFY2(converted, converted ? "" : qPrintable(converted.error()));
+            QCOMPARE(readFile(file("mods/mod.jar")), "original");
+        } else {
+            // the edit is noticed before the file is replaced, and the edited file stays
+            QVERIFY(edited);
+            QVERIFY(!converted);
+            QCOMPARE(readFile(file("mods/mod.jar")), "original and an edit");
+            QVERIFY(sameFile(file("mods/mod.jar"), path("elsewhere/mod.jar")));
+        }
     }
 
     void test_failedPlacementRestoresPermissions()
     {
-        if (!g_replacesUserFiles) {
-            QSKIP("Replacing conversions need the backup protocol on this system");
-        }
         store("common mod");
         QVERIFY(writeFile(file("mods/mod.jar"), "common mod"));
         const auto before = FS::fileId(file("mods/mod.jar"));

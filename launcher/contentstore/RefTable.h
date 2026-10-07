@@ -105,8 +105,23 @@ struct Transaction {
     QString expected;
     // the generation the link uses; the current one when not set
     std::optional<int> generation;
+    // Replacing a user's file keeps the old file aside until it is proven unchanged: hard linked ("link") or renamed
+    // ("rename") to backupPath, which must still hash to expectedDigest. State only format version 2 understands.
+    QString backupMethod;
+    QString backupPath;
+    QString expectedDigest;
+    // the placement is being rolled back, so a crash restores the backup rather than checking it
+    bool aborting = false;
 
     bool operator==(const Transaction&) const = default;
+};
+
+// The backup of a committed replacement that wasn't released yet
+struct PendingBackup {
+    RefKey key;
+    QString backupPath;
+
+    bool operator==(const PendingBackup&) const = default;
 };
 
 // A user's file whose permissions a conversion changed, until it finishes. A crash before then restores them.
@@ -166,6 +181,12 @@ QJsonObject destroyAborted(const QString& hash);
 QJsonObject freeze(const QString& conversion, const Freeze& freeze);
 // the conversion finished, one way or another: completed, restored, skipped or failed
 QJsonObject unfreeze(const QString& conversion, const QString& outcome);
+// About to keep the file at the transaction's path aside as a backup; written before anything on disk changes
+QJsonObject backup(qint64 transactionId, const QString& method, const QString& backupPath, const QString& expectedDigest);
+// the replacement is being rolled back
+QJsonObject aborting(qint64 transactionId);
+// the backup of a committed replacement was removed
+QJsonObject backupReleased(qint64 transactionId);
 // The current generation turned out damaged: it is kept at retiredPath for the links that use it, and the hash has no
 // current generation until an intact copy is stored
 QJsonObject retire(const QString& hash, int generation, const QString& retiredPath);
@@ -193,6 +214,8 @@ class RefTable {
     const QMap<QString, int>& destroying() const { return m_destroying; }
     // conversions in progress, by id; state only format version 2 understands
     const QMap<QString, Freeze>& freezes() const { return m_freezes; }
+    // committed replacements whose backup wasn't removed yet, by transaction; state only format version 2 understands
+    const QMap<qint64, PendingBackup>& pendingBackups() const { return m_pendingBackups; }
 
     std::optional<Ref> ref(const RefKey& key) const;
     // the latest time any record carried, so the store's clock never goes back behind what it recorded
@@ -212,6 +235,7 @@ class RefTable {
     QMap<qint64, Transaction> m_transactions;
     QMap<QString, int> m_destroying;
     QMap<QString, Freeze> m_freezes;
+    QMap<qint64, PendingBackup> m_pendingBackups;
     qint64 m_nextTransactionId = 1;
     qint64 m_latestTime = 0;
 };
