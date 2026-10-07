@@ -59,7 +59,13 @@ std::unique_ptr<QProcess> holdOpen(const QString& path)
     return process;
 }
 
+bool finished(QProcess& process, int timeoutMs = 10000)
+{
+    return process.state() == QProcess::NotRunning || process.waitForFinished(timeoutMs) || process.state() == QProcess::NotRunning;
+}
+
 using Step = ContentStore::PlacementStep;
+using Operation = FS::Testing::Operation;
 }  // namespace
 
 // Pending validations: the backup of a replaced user's file is kept until it is shown unchanged, and put back otherwise
@@ -131,6 +137,15 @@ class ValidationTest : public QObject {
         WriterGuard::setBackupsNeedValidationForTesting(true);
     }
 
+    void cleanup()
+    {
+        FS::Testing::setFaultHook(nullptr);
+        WriterGuard::setUnenforcedForTesting(false);
+        if (m_store) {
+            m_store->setInterruptionForTesting(nullptr);
+        }
+    }
+
     void init()
     {
         m_store.reset();
@@ -155,7 +170,9 @@ class ValidationTest : public QObject {
         const auto identity = FS::identity(userFile());
         QVERIFY(identity);
         QVERIFY(m_store->placeAt({ destination(), stored->hash, *identity, stored->hash }));
-        // nothing had it open, so it was validated and released
+        // nothing had it open, so it was validated: released, or renamed aside where no pin protects it and released
+        // by the next validation
+        QCOMPARE(*m_store->validatePendingBackups(), 0);
         QVERIFY(m_store->table().pendingBackups().isEmpty());
         QVERIFY(leftovers().isEmpty());
         QVERIFY(sameFile(userFile(), m_store->objectPath(stored->hash)));
@@ -166,6 +183,7 @@ class ValidationTest : public QObject {
         const auto hash = replaceAndStop();
         QCOMPARE(m_store->table().pendingBackups().size(), 1);
         reopen();
+        QCOMPARE(*m_store->validatePendingBackups(), 0);
         QVERIFY(m_store->table().pendingBackups().isEmpty());
         QVERIFY(leftovers().isEmpty());
         QVERIFY(sameFile(userFile(), m_store->objectPath(hash)));
@@ -304,11 +322,120 @@ class ValidationTest : public QObject {
         QCOMPARE(*m_store->validatePendingBackups(), 1);
 
         holder->kill();
-        holder->waitForFinished();
+        QVERIFY(finished(*holder));
+        m_store->validatePendingBackups();
         QCOMPARE(*m_store->validatePendingBackups(), 0);
         QVERIFY(m_store->table().pendingBackups().isEmpty());
         QVERIFY(!QFileInfo::exists(backup));
         QVERIFY(sameFile(userFile(), m_store->objectPath(hash)));
+    }
+
+    void test_writeAfterTheCheckIsKept()
+    {
+        // a guard no pin backs, as on Linux and macOS
+        WriterGuard::setUnenforcedForTesting(true);
+        replaceAndStop();
+        const auto before = FS::fileId(backupPath());
+        reopen();
+        // validated, and renamed aside instead of removed
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        const auto pending = m_store->table().pendingBackups().first();
+        QVERIFY(!pending.trashedFrom.isEmpty());
+        QVERIFY(!QFileInfo::exists(pending.trashedFrom));
+        QCOMPARE(FS::fileId(pending.backupPath), before);
+        // a program that had looked the backup up before writes to it now: the file still has a name
+        QVERIFY(appendFile(pending.backupPath, " and an edit"));
+        QCOMPARE(*m_store->validatePendingBackups(), 0);
+        QCOMPARE(FS::fileId(userFile()), before);
+        QCOMPARE(readFile(userFile()), "common mod and an edit");
+        QVERIFY(!m_store->table().ref(destination().key()));
+        QVERIFY(leftovers().isEmpty());
+    }
+
+    void test_renameAsideSurvivesACrash()
+    {
+        WriterGuard::setUnenforcedForTesting(true);
+        const auto hash = replaceAndStop();
+        // the rename aside is recorded, then fails as if the launcher crashed before it
+        FS::Testing::setFaultHook([](Operation operation, const QString& target) {
+            return operation == Operation::Replace && QFileInfo(target).fileName().startsWith(".prism-del-");
+        });
+        QCOMPARE(*m_store->validatePendingBackups(), 1);
+        const auto pending = m_store->table().pendingBackups().first();
+        QVERIFY(!QFileInfo::exists(pending.backupPath));
+        QVERIFY(QFileInfo::exists(pending.trashedFrom));
+        FS::Testing::setFaultHook(nullptr);
+
+        reopen();
+        // finished, then removed
+        QCOMPARE(*m_store->validatePendingBackups(), 0);
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        QVERIFY(leftovers().isEmpty());
+        QVERIFY(sameFile(userFile(), m_store->objectPath(hash)));
+    }
+
+    void test_conflictMoveMustBeDurable()
+    {
+        replaceAndStop();
+        QVERIFY(appendFile(backupPath(), " and an edit"));
+        QVERIFY(FS::deleteLink(userFile()));
+        // the backup is moved aside, but the recovered folder can't be flushed
+        FS::Testing::setFaultHook(
+            [](Operation operation, const QString& dir) { return operation == Operation::FlushDir && dir.contains(".prism-recovered"); });
+        reopen();
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+        QCOMPARE(recovered().size(), 1);
+        // retried, and still not durable: the validation stays open
+        QCOMPARE(*m_store->validatePendingBackups(), 1);
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+
+        FS::Testing::setFaultHook(nullptr);
+        QCOMPARE(*m_store->validatePendingBackups(), 0);
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        QCOMPARE(readFile(recovered().first()), "common mod and an edit");
+    }
+
+    void test_openedAsItIsRemoved()
+    {
+#if !defined(Q_OS_LINUX)
+        QSKIP("Only a Linux lease keeps hold of a removed file");
+#else
+        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
+            QSKIP("This file system doesn't offer leases");
+        }
+        replaceAndStop();
+        reopen();
+        // renamed aside by the first validation
+        const auto trash = m_store->table().pendingBackups().first().backupPath;
+        QVERIFY(QFileInfo(trash).fileName().startsWith(".prism-del-"));
+        // as the second removes it, a program opens it, and keeps it open well past the first look
+        std::unique_ptr<QProcess> writer;
+        m_store->setInterruptionForTesting([&](Step step) {
+            if (step == Step::Removing && !writer) {
+                writer = std::make_unique<QProcess>();
+                writer->start("sh", { "-c", QString("exec 3>>'%1'; sleep 1; printf late >&3").arg(trash) });
+                writer->waitForStarted();
+                QTest::qWait(300);
+            }
+            return false;
+        });
+        QCOMPARE(*m_store->validatePendingBackups(), 1);
+        m_store->setInterruptionForTesting(nullptr);
+        QVERIFY(writer);
+        // gone, but still pending, as the program may still write
+        QVERIFY(!QFileInfo::exists(trash));
+        QCOMPARE(m_store->table().pendingBackups().size(), 1);
+
+        QVERIFY(finished(*writer));
+        QCOMPARE(*m_store->validatePendingBackups(), 0);
+        QVERIFY(m_store->table().pendingBackups().isEmpty());
+        const auto files = recovered();
+        QCOMPARE(files.size(), 1);
+        QCOMPARE(readFile(files.first()), "common modlate");
+        const auto restored = m_store->takeRestoredFiles();
+        QCOMPARE(restored.size(), 1);
+        QCOMPARE(restored.first().recoveredPath, files.first());
+#endif
     }
 
     void test_pendingSurvivesCompaction()

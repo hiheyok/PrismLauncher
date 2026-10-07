@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -236,6 +237,8 @@ class ContentStore {
         Restored,
         // something newer is at the path, and the backup's recovered path was recorded
         ConflictBegun,
+        // a validated backup is guarded and about to be removed
+        Removing,
         // the backup was moved to its recovered path, before that is recorded
         ConflictMoved,
     };
@@ -514,6 +517,8 @@ class ContentStore {
     // Puts a changed backup back at its path, or moves it aside if something newer is there; also finishes one a crash
     // interrupted
     Result<bool> restoreBackupLocked(qint64 id, QSet<QString>& unused);
+    // Finishes the salvage of a removed backup once the program that opened it closed it; false while it hasn't
+    Result<bool> finishSalvageLocked(qint64 id, WriterGuard& guard, int attempts = 1);
     // Finishes replacements with a backup that a crash interrupted, then releases backups left behind
     Result<> finishBackupsLocked();
     Result<> lowerWriterVersionLocked();
@@ -534,6 +539,9 @@ class ContentStore {
     PrivilegedLinker m_privilegedLinker;
     std::function<bool(PlacementStep)> m_interruption;
     QList<RestoredFile> m_restoredFiles;
+    // Removed backups that a program opened as they were removed, by transaction: the guard keeps each one until the
+    // program closed it and what it wrote was saved. The backup stays pending until then.
+    std::map<qint64, WriterGuard> m_salvages;
     std::function<qint64()> m_clock;
     std::function<bool(const QString&)> m_unreadable;
 };

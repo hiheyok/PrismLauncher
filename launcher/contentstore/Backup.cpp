@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QThread>
 
 #include "FileSystemPrimitives.h"
 #include "contentstore/ObjectFiles.h"
@@ -288,6 +289,16 @@ Result<bool> ContentStore::validateBackupLocked(qint64 id, QSet<QString>& unused
     if (pending.restoring) {
         return restoreBackupLocked(id, unused);
     }
+    if (const auto salvage = m_salvages.find(id); salvage != m_salvages.end()) {
+        // removed, but a program that opened it as it was removed still has it open
+        return finishSalvageLocked(id, salvage->second);
+    }
+    if (!pending.trashedFrom.isEmpty() && !inspect(pending.backupPath).exists && inspect(pending.trashedFrom).exists) {
+        // the rename aside was recorded, but a crash came first
+        TRY(FS::replaceFile(pending.trashedFrom, pending.backupPath))
+        TRY(FS::flushDir(QFileInfo(pending.backupPath).absolutePath()))
+        return false;
+    }
     if (!inspect(pending.backupPath).exists) {
         // removed after the last check, before that was recorded
         if (auto flushed = FS::flushDir(QFileInfo(pending.backupPath).absolutePath()); !flushed) {
@@ -313,24 +324,60 @@ Result<bool> ContentStore::validateBackupLocked(qint64 id, QSet<QString>& unused
         return restoreBackupLocked(id, unused);
     }
 
+    if (!guard->keepsEveryWriterOut() && pending.trashedFrom.isEmpty()) {
+        // A program that looked the backup up before it was guarded can still open it, and would write to a file with no
+        // name if it were removed now. So it is first renamed to a name no program knows, and released while it still
+        // has a name; a later validation removes it, once it is unchanged and quiet again.
+        const auto trash = QDir(QFileInfo(pending.backupPath).absolutePath()).filePath(QString(".prism-del-%1").arg(id));
+        TRY(commitLocked({ RefRecord::backupTrashed(id, trash) }))
+        TRY(FS::replaceFile(pending.backupPath, trash))
+        TRY(FS::flushDir(QFileInfo(trash).absolutePath()))
+        return false;
+    }
+
+    if (interrupted(PlacementStep::Removing)) {
+        return std::unexpected(interruptedError());
+    }
     discardFile(pending.backupPath);
     if (inspect(pending.backupPath).exists) {
         return false;
     }
     if (guard->disturbed(pending.backupPath)) {
-        // A program opened it as it was removed, and now waits on the lease with a file that has no name. Whatever it
-        // writes is saved once it closes the file.
-        const auto recovered = recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id);
-        auto salvaged = guard->salvage(recovered, pending.transaction.expectedDigest);
-        if (!salvaged) {
-            qWarning() << "Shared store:" << salvaged.error();
-        } else if (*salvaged) {
-            m_restoredFiles.append({ ownerPath(pending.key), recovered });
-        }
+        // A program opened it as it was removed, and waits on the lease with a file that has no name. The guard keeps
+        // that file, and what the program writes is saved once it closes it; until then the backup stays pending.
+        guard->beginSalvage(recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id),
+                            pending.transaction.expectedDigest);
+        const auto salvage = m_salvages.emplace(id, std::move(*guard)).first;
+        // a moment for one that writes and closes right away
+        return finishSalvageLocked(id, salvage->second, 10);
     }
     if (auto flushed = FS::flushDir(QFileInfo(pending.backupPath).absolutePath()); !flushed) {
         return std::unexpected(flushed.error());
     }
+    TRY(commitLocked({ RefRecord::backupReleased(id) }))
+    return true;
+}
+
+Result<bool> ContentStore::finishSalvageLocked(qint64 id, WriterGuard& guard, int attempts)
+{
+    const auto pending = m_table.pendingBackups()[id];
+    auto state = guard.trySalvage();
+    for (int attempt = 1; attempt < attempts && state && *state == WriterGuard::Salvage::Waiting; attempt++) {
+        QThread::msleep(20);
+        state = guard.trySalvage();
+    }
+    if (!state) {
+        return std::unexpected(state.error());
+    }
+    if (*state == WriterGuard::Salvage::Waiting) {
+        return false;
+    }
+    if (*state == WriterGuard::Salvage::Saved) {
+        m_restoredFiles.append(
+            { ownerPath(pending.key), recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id) });
+    }
+    m_salvages.erase(id);
+    TRY(FS::flushDir(QFileInfo(pending.backupPath).absolutePath()))
     TRY(commitLocked({ RefRecord::backupReleased(id) }))
     return true;
 }
@@ -353,6 +400,9 @@ Result<bool> ContentStore::restoreBackupLocked(qint64 id, QSet<QString>& unused)
     if (!pending.recoveredPath.isEmpty()) {
         // moving it aside was recorded: finish that
         if (!backupExists && isFile(pending.recoveredPath, old)) {
+            // moved before; only done once both folders are durable, which a failed flush left undone
+            TRY(FS::flushDir(QFileInfo(pending.recoveredPath).absolutePath()))
+            TRY(FS::flushDir(QFileInfo(pending.backupPath).absolutePath()))
             return finished(RefRecord::restoreConflict(id), pending.recoveredPath);
         }
         if (!backupExists) {

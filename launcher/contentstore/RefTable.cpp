@@ -432,6 +432,11 @@ QJsonObject restoreConflict(qint64 transactionId)
     return { { "type", "restoreConflict" }, { "transaction", transactionId } };
 }
 
+QJsonObject backupTrashed(qint64 transactionId, const QString& trashPath)
+{
+    return { { "type", "backupTrashed" }, { "transaction", transactionId }, { "trashPath", trashPath } };
+}
+
 QJsonObject backupReleased(qint64 transactionId)
 {
     return { { "type", "backupReleased" }, { "transaction", transactionId } };
@@ -668,6 +673,15 @@ Result<> RefTable::apply(const QJsonObject& record)
         m_pendingBackups.remove(record["transaction"].toInteger());
         return {};
     }
+    if (type == "backupTrashed") {
+        const auto pending = m_pendingBackups.find(record["transaction"].toInteger());
+        if (pending == m_pendingBackups.end()) {
+            return std::unexpected(QString("Trashing of an unknown backup"));
+        }
+        pending->trashedFrom = pending->backupPath;
+        pending->backupPath = record["trashPath"].toString();
+        return {};
+    }
     if (type == "restoreBegin" || type == "restoreConflictBegin" || type == "restoreCommit" || type == "restoreConflict") {
         const auto pending = m_pendingBackups.find(record["transaction"].toInteger());
         if (pending == m_pendingBackups.end() || pending->transaction.id == 0) {
@@ -898,6 +912,9 @@ QJsonObject RefTable::snapshot() const
             if (!it->recoveredPath.isEmpty()) {
                 json["recoveredPath"] = it->recoveredPath;
             }
+            if (!it->trashedFrom.isEmpty()) {
+                json["trashedFrom"] = it->trashedFrom;
+            }
             pending[QString::number(it.key())] = json;
         }
         snapshot["pendingBackups"] = pending;
@@ -992,6 +1009,7 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
         }
         backup.restoring = json["restoring"].toBool();
         backup.recoveredPath = json["recoveredPath"].toString();
+        backup.trashedFrom = json["trashedFrom"].toString();
         table.m_pendingBackups[it.key().toLongLong()] = backup;
     }
     const auto freezes = snapshot["freezes"].toObject();

@@ -135,6 +135,9 @@ struct PendingBackup {
     bool restoring = false;
     // something newer is at the path, so the backup is being moved here instead (RESTORE_CONFLICT_BEGIN)
     QString recoveredPath;
+    // The backup was validated, and renamed from here to backupPath, a name no other program knows, before it is
+    // removed by a later validation. A program that was about to open it gets a file that still has a name.
+    QString trashedFrom;
 
     bool operator==(const PendingBackup&) const = default;
 };
@@ -214,6 +217,8 @@ QJsonObject restoreCommit(qint64 transactionId);
 QJsonObject restoreConflictBegin(qint64 transactionId, const QString& recoveredPath);
 // the backup was moved to its recovered path; the refs stay as they are, and the validation ends
 QJsonObject restoreConflict(qint64 transactionId);
+// The validated backup is about to be renamed to trashPath, where a later validation removes it; written before
+QJsonObject backupTrashed(qint64 transactionId, const QString& trashPath);
 // The current generation turned out damaged: it is kept at retiredPath for the links that use it, and the hash has no
 // current generation until an intact copy is stored
 QJsonObject retire(const QString& hash, int generation, const QString& retiredPath);

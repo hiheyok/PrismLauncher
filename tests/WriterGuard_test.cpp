@@ -268,15 +268,22 @@ class WriterGuardTest : public QObject {
         QVERIFY(FS::deleteLink(userFile()));
         // a program that looked the file up before it was removed opens it now, and waits on the lease
         const auto removed = QString("/proc/%1/fd/%2").arg(QCoreApplication::applicationPid()).arg(guard->descriptorForTesting());
-        auto writer = appendTo(removed, "late");
-        QTest::qWait(500);
+        // it keeps the file open a while before it writes
+        auto writer = std::make_unique<QProcess>();
+        writer->start("sh", { "-c", QString("exec 3>>'%1'; sleep 1; printf late >&3").arg(removed) });
+        QVERIFY(writer->waitForStarted());
+        QTest::qWait(300);
         QVERIFY(guard->disturbed(userFile()));
-        // its write is saved once it closes the file
-        const auto saved =
-            guard->salvage(path("saved"), QString::fromLatin1(QCryptographicHash::hash("common mod", QCryptographicHash::Sha256).toHex()));
-        QVERIFY2(saved, saved ? "" : qPrintable(saved.error()));
-        QVERIFY(*saved);
+        // it may write once the guard lets it go; nothing is given up while it still has the file open
+        guard->beginSalvage(path("saved"), QString::fromLatin1(QCryptographicHash::hash("common mod", QCryptographicHash::Sha256).toHex()));
+        const auto waiting = guard->trySalvage();
+        QVERIFY(waiting);
+        QCOMPARE(*waiting, WriterGuard::Salvage::Waiting);
+        // its write is saved once it closed the file
         QVERIFY(finished(*writer));
+        const auto saved = guard->trySalvage();
+        QVERIFY2(saved, saved ? "" : qPrintable(saved.error()));
+        QCOMPARE(*saved, WriterGuard::Salvage::Saved);
         QCOMPARE(readFile(path("saved")), "common modlate");
 #endif
     }

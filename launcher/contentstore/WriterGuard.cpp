@@ -85,6 +85,13 @@ bool openedByOthers(const QString& path)
 
 WriterGuard::~WriterGuard()
 {
+    if (!m_salvageTarget.isEmpty()) {
+        // the file is gone once this ends, so what it holds now is all that can be kept
+        qWarning() << "Shared store: a program still has a removed backup open; saving what it wrote so far";
+        if (auto saved = finishSalvage(); !saved) {
+            qWarning() << "Shared store:" << saved.error();
+        }
+    }
     release();
 }
 
@@ -93,6 +100,8 @@ WriterGuard::WriterGuard(WriterGuard&& other) noexcept
     , m_fileId(std::move(other.m_fileId))
     , m_pin(std::move(other.m_pin))
     , m_leaseDescriptor(std::exchange(other.m_leaseDescriptor, -1))
+    , m_salvageTarget(std::exchange(other.m_salvageTarget, {}))
+    , m_salvageDigest(std::exchange(other.m_salvageDigest, {}))
 {
     other.m_pin.reset();
 }
@@ -106,6 +115,8 @@ WriterGuard& WriterGuard::operator=(WriterGuard&& other) noexcept
         m_pin = std::move(other.m_pin);
         other.m_pin.reset();
         m_leaseDescriptor = std::exchange(other.m_leaseDescriptor, -1);
+        m_salvageTarget = std::exchange(other.m_salvageTarget, {});
+        m_salvageDigest = std::exchange(other.m_salvageDigest, {});
     }
     return *this;
 }
@@ -247,29 +258,40 @@ Result<QString> WriterGuard::sha256(const QString& path) const
     return ObjectFiles::sha256(path);
 }
 
-Result<bool> WriterGuard::salvage([[maybe_unused]] const QString& target, [[maybe_unused]] const QString& expectedDigest)
+void WriterGuard::beginSalvage([[maybe_unused]] const QString& target, [[maybe_unused]] const QString& expectedDigest)
 {
 #if defined(Q_OS_LINUX)
     if (m_leaseDescriptor < 0) {
-        release();
-        return false;
+        return;
     }
     // The program counts as a writer before it waits on the lease, so a lease is only granted again once it closed
     // the file. Its write can't be lost meanwhile: this descriptor keeps the removed file.
     fcntl(m_leaseDescriptor, F_SETLEASE, F_UNLCK);
-    constexpr int waitMs = 20;
-    constexpr int timeoutMs = 30000;
-    bool closed = false;
-    for (int waited = 0; waited < timeoutMs; waited += waitMs) {
-        if (fcntl(m_leaseDescriptor, F_SETLEASE, F_WRLCK) == 0) {
-            closed = true;
-            break;
-        }
-        usleep(waitMs * 1000);
+    m_salvageTarget = target;
+    m_salvageDigest = expectedDigest;
+#endif
+}
+
+Result<WriterGuard::Salvage> WriterGuard::trySalvage()
+{
+#if defined(Q_OS_LINUX)
+    if (m_salvageTarget.isEmpty()) {
+        return Salvage::Unchanged;
     }
-    if (!closed) {
-        qWarning() << "Shared store: a program still has a removed backup open; saving what it wrote so far";
+    if (fcntl(m_leaseDescriptor, F_SETLEASE, F_WRLCK) != 0) {
+        return Salvage::Waiting;
     }
+    return finishSalvage();
+#else
+    return Salvage::Unchanged;
+#endif
+}
+
+Result<WriterGuard::Salvage> WriterGuard::finishSalvage()
+{
+#if defined(Q_OS_LINUX)
+    const auto target = std::exchange(m_salvageTarget, {});
+    const auto expectedDigest = std::exchange(m_salvageDigest, {});
     auto digest = sha256(target);
     if (!digest) {
         release();
@@ -277,11 +299,11 @@ Result<bool> WriterGuard::salvage([[maybe_unused]] const QString& target, [[mayb
     }
     if (*digest == expectedDigest) {
         release();
-        return false;
+        return Salvage::Unchanged;
     }
     QDir().mkpath(QFileInfo(target).absolutePath());
     QFile file(target);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         release();
         return std::unexpected(QString("Failed to create %1").arg(target));
     }
@@ -306,10 +328,9 @@ Result<bool> WriterGuard::salvage([[maybe_unused]] const QString& target, [[mayb
     release();
     TRY(FS::flushFile(target))
     TRY(FS::flushDir(QFileInfo(target).absolutePath()))
-    return true;
+    return Salvage::Saved;
 #else
-    release();
-    return false;
+    return Salvage::Unchanged;
 #endif
 }
 

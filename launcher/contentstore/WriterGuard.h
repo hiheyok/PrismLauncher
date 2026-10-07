@@ -45,11 +45,19 @@ class WriterGuard {
     // Ends the guard; anything waiting to open the file goes ahead
     void release();
 
-    // For a file removed while guarded, after disturbed() found a program that opened it as it was removed: releases
-    // the guard, waits until that program closed the file, and saves its contents at target if they no longer hash
-    // to expectedDigest. Returns whether it saved them. Only a Linux lease keeps hold of the removed file; elsewhere it
-    // saves nothing.
-    Result<bool> salvage(const QString& target, const QString& expectedDigest);
+    // Whether no program can open the file for writing at all while it is guarded, as with a Windows pin. Only then can
+    // the guarded file be removed at once; a program can still reach a file under a Linux lease as it is removed.
+    bool keepsEveryWriterOut() const { return m_pin.has_value(); }
+
+    enum class Salvage : std::uint8_t { Waiting, Unchanged, Saved };
+    // For a file removed while guarded, after disturbed() found a program that opened it as it was removed: lets that
+    // program go ahead, while this guard keeps the removed file, and saves its contents at target once the program
+    // closed it, if they no longer hash to expectedDigest. Only a Linux lease keeps hold of a removed file; elsewhere
+    // nothing is saved.
+    void beginSalvage(const QString& target, const QString& expectedDigest);
+    // Whether the program closed the file yet, and what was done then. While it is Waiting, the guard must be kept, as
+    // the file is gone once it ends. A guard that ends while waiting saves what the file holds by then.
+    Result<Salvage> trySalvage();
 
     // the descriptor holding a Linux lease, or -1, so tests can open the file the way another program would
     int descriptorForTesting() const { return m_leaseDescriptor; }
@@ -72,4 +80,9 @@ class WriterGuard {
     std::optional<FS::PinnedFile> m_pin;
     // the descriptor holding a Linux write lease
     int m_leaseDescriptor = -1;
+    // set while a removed file is being salvaged
+    QString m_salvageTarget;
+    QString m_salvageDigest;
+
+    Result<Salvage> finishSalvage();
 };
