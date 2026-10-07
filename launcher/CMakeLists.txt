@@ -78,6 +78,7 @@ set(CORE_SOURCES
     contentstore/ObjectFiles.h
     contentstore/ObjectFiles.cpp
     contentstore/Placement.cpp
+    contentstore/Convert.cpp
     contentstore/Reconcile.cpp
     contentstore/Repair.cpp
     contentstore/SharedContent.h

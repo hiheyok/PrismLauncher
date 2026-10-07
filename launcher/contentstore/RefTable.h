@@ -109,6 +109,15 @@ struct Transaction {
     bool operator==(const Transaction&) const = default;
 };
 
+// A user's file whose permissions a conversion changed, until it finishes. A crash before then restores them.
+struct Freeze {
+    QString path;
+    QString fileId;
+    int permissions = 0;
+
+    bool operator==(const Freeze&) const = default;
+};
+
 struct ClientInfo {
     QString dataDir;
     qint64 lastSeen = 0;
@@ -153,6 +162,10 @@ QJsonObject destroying(const QString& hash, int generation);
 QJsonObject destroyed(const QString& hash, int generation);
 // the destruction was given up, as the file turned out to be in use
 QJsonObject destroyAborted(const QString& hash);
+// A conversion is about to change the permissions of the user's file at path; written before it does
+QJsonObject freeze(const QString& conversion, const Freeze& freeze);
+// the conversion finished, one way or another: completed, restored, skipped or failed
+QJsonObject unfreeze(const QString& conversion, const QString& outcome);
 // The current generation turned out damaged: it is kept at retiredPath for the links that use it, and the hash has no
 // current generation until an intact copy is stored
 QJsonObject retire(const QString& hash, int generation, const QString& retiredPath);
@@ -178,6 +191,8 @@ class RefTable {
     const QMap<qint64, Transaction>& transactions() const { return m_transactions; }
     // generations whose destruction started but wasn't confirmed, by hash
     const QMap<QString, int>& destroying() const { return m_destroying; }
+    // conversions in progress, by id; state only format version 2 understands
+    const QMap<QString, Freeze>& freezes() const { return m_freezes; }
 
     std::optional<Ref> ref(const RefKey& key) const;
     // the latest time any record carried, so the store's clock never goes back behind what it recorded
@@ -196,6 +211,7 @@ class RefTable {
     QMap<QString, ClientInfo> m_clients;
     QMap<qint64, Transaction> m_transactions;
     QMap<QString, int> m_destroying;
+    QMap<QString, Freeze> m_freezes;
     qint64 m_nextTransactionId = 1;
     qint64 m_latestTime = 0;
 };

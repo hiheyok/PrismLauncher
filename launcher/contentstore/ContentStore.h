@@ -206,6 +206,30 @@ class ContentStore {
         Created,
         Prepared,
         Swapped,
+        // a conversion recorded the user's permissions and is about to change them
+        Frozen,
+        // a conversion stored the file, and is about to link it
+        Ingested,
+    };
+
+    struct ConvertOptions {
+        // convert a file with other hard links by copying it, leaving those links as they are
+        bool adoptHardLinked = false;
+    };
+
+    enum class ConvertOutcome : std::uint8_t {
+        // the file is now a link to a stored file
+        Shared,
+        // it already was
+        AlreadyShared,
+        // it was left as it is, see the reason
+        Skipped,
+    };
+
+    struct ConvertResult {
+        ConvertOutcome outcome = ConvertOutcome::Skipped;
+        QString reason;
+        QString hash;
     };
 
     ContentStore(QString storeDir, QString dataDir);
@@ -247,6 +271,20 @@ class ContentStore {
     // Replaces the link at key with a writable copy of the bytes it shows, and forgets the link. Fails without changing
     // anything if the path doesn't hold the recorded link.
     Result<UnshareResult> unshare(const RefKey& key);
+
+    // Shares a file that already is in an instance ("Share all content"): it becomes the stored file, or a link to an
+    // identical one. Either the file ends up shared or it is left exactly as it was, permissions included. A file with
+    // other hard links is skipped unless adopted by copying. Replacing the user's file with another one needs the backup
+    // protocol on POSIX, so until it exists such conversions are skipped there.
+    Result<ConvertResult> convert(const Destination& destination, const ConvertOptions& options);
+    Result<ConvertResult> convert(const Destination& destination) { return convert(destination, ConvertOptions{}); }
+
+    // Lowers the store's format again once no conversion is in progress, so launchers that only share new files can
+    // change it again. Called after a batch of conversions and when the store opens.
+    Result<> finishConversions();
+
+    // The store's format, as the most restrictive of its headers
+    StoreFormat format() const;
 
     // Checks that every link of this launcher is still where it was recorded, and records which ones aren't. Only looks
     // at the recorded paths, and never releases or destroys anything.
@@ -355,6 +393,13 @@ class ContentStore {
     State setState(State state, const QString& message = {});
     // Stores the candidate file under hash, or finds the stored file already there. Called with m_mutex locked.
     Result<IngestResult> publishLocked(const QString& candidate, const QString& hash, qint64 size);
+    // ingest, for a source the caller flushed and pinned against writers. Only that file is ingested: if another file was
+    // put at its path, as the pin allows renames, ingesting fails before anything changes. A source linked in isn't
+    // flushed again, which would need write access the pin refuses.
+    Result<IngestResult> ingestFile(const QString& source,
+                                    IngestMode mode,
+                                    const std::optional<PrecomputedDigest>& digest,
+                                    const std::optional<FS::FileId>& pinnedSource);
     // Where the file of a generation is
     QString generationPath(const QString& hash, const Generation& generation) const;
     // Whether path holds the link that ref records
@@ -400,6 +445,11 @@ class ContentStore {
     Result<> retargetLocked(const RefKey& key, const Ref& ref, int generation, const QString& target);
     // Finishes or abandons destructions a crash interrupted
     Result<> finishDestructionsLocked();
+    // Restores the permissions of the user's files of conversions a crash interrupted, unless they became stored files
+    Result<> finishFreezesLocked();
+    // Makes the store need format version 2 to change it, before the first state only that version understands
+    Result<> raiseWriterVersionLocked();
+    Result<> lowerWriterVersionLocked();
 
     QString m_storeDir;
     QString m_dataDir;
