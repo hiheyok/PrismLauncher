@@ -110,6 +110,8 @@ class MainWindow : public QMainWindow {
     void on_actionCopyInstance_triggered();
 
     void on_actionShareAllContent_triggered();
+    void on_actionStopSharingAllContent_triggered();
+    void on_actionClearKeptLocal_triggered();
 
     void on_actionChangeInstGroup_triggered();
 

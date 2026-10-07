@@ -84,7 +84,9 @@ SharedStorePage::SharedStorePage(QWidget* parent) : QWidget(parent)
     m_repair->setToolTip(tr("Point symbolic links whose target is gone, such as after the folder moved, back at their shared files"));
     m_cleanUp = new QPushButton(tr("Clean up"), maintenanceBox);
     m_cleanUp->setToolTip(tr("Remove the shared files no instance uses anymore, after making sure no link to them is left"));
-    for (auto* button : { m_verify, m_reconcile, m_deepVerify, m_repair, m_cleanUp }) {
+    m_stopAll = new QPushButton(tr("Stop sharing everything"), maintenanceBox);
+    m_stopAll->setToolTip(tr("Make every shared file in every instance a local copy again, then remove what nothing uses anymore"));
+    for (auto* button : { m_verify, m_reconcile, m_deepVerify, m_repair, m_cleanUp, m_stopAll }) {
         buttons->addWidget(button);
     }
     buttons->addStretch();
@@ -148,6 +150,47 @@ SharedStorePage::SharedStorePage(QWidget* parent) : QWidget(parent)
                     tr("%n unused file(s) are left, taking %1.", "", stats.unusedFiles).arg(locale.formattedDataSize(stats.unusedBytes)));
             }
             return text.join("\n\n");
+        });
+    });
+    connect(m_stopAll, &QPushButton::clicked, this, [this] {
+        auto* store = SharedContent::store();
+        if (!store) {
+            return;
+        }
+        const auto links = SharedContent::linkCount(*store, {});
+        if (links == 0) {
+            CustomMessageBox::selectable(this, tr("Stop sharing everything"), tr("No file is shared."), QMessageBox::Information)->exec();
+            return;
+        }
+        const QLocale locale;
+        const auto answer =
+            CustomMessageBox::selectable(this, tr("Stop sharing everything"),
+                                         tr("%n shared file(s) in your instances become local copies again, taking %1 more space, as "
+                                            "each instance gets its own copy. They aren't kept local, so they can be shared again later. "
+                                            "Afterwards, the shared files nothing uses are removed.\n\nContinue?",
+                                            "", links)
+                                             .arg(locale.formattedDataSize(SharedContent::linkedSize(*store, {}) - store->stats().bytes +
+                                                                           store->stats().unusedBytes)),
+                                         QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                ->exec();
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+        StopSharingTask stop(store, {});
+        ProgressDialog stopping(this);
+        stopping.execWithTask(&stop);
+        QStringList lines;
+        if (const auto& report = stop.report(); report) {
+            lines.append(tr("%n file(s) are local copies now.", "", report->unshared));
+            if (!report->failed.isEmpty()) {
+                lines.append(tr("These files are still shared:\n%1").arg(report->failed.join('\n')));
+            }
+        }
+        // what nothing uses anymore, including files that were linked symbolically and wait for this scan
+        auto* cleanUp = new ReconcileStoreTask(store, SharedContent::reconcileOptions(*store));
+        runTask(cleanUp, [cleanUp, lines]() mutable {
+            lines.append(tr("Removed %n file(s) nothing uses anymore.", "", cleanUp->report()->destroyed));
+            return lines.join("\n\n");
         });
     });
     connect(m_deepVerify, &QPushButton::clicked, this, [this] {
@@ -232,7 +275,7 @@ void SharedStorePage::refreshStatus()
 {
     auto* store = APPLICATION->contentStore();
     const bool writable = store && store->isWritable();
-    for (auto* button : { m_verify, m_reconcile, m_deepVerify, m_repair, m_cleanUp }) {
+    for (auto* button : { m_verify, m_reconcile, m_deepVerify, m_repair, m_cleanUp, m_stopAll }) {
         button->setEnabled(writable);
     }
     m_useAnyway->setVisible(store && store->state() == ContentStore::State::Busy && store->lockHolder() &&

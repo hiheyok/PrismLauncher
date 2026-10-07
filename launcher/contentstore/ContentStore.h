@@ -412,6 +412,8 @@ class ContentStore {
     QList<std::pair<RefKey, Ref>> refsSnapshot() const;
     // The folder of an owner, or an empty string for an owner this store doesn't know
     QString ownerRoot(const QString& owner) const;
+    // The size of a stored file, or 0 for one this store doesn't have
+    qint64 storedSize(const QString& hash) const;
     // Whether no placement or pending validation is in progress, so the store's links can be moved elsewhere
     bool isIdle() const;
     // Records that the link at key now belongs to another store, after it was replaced by that store's link. Fails while

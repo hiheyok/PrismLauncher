@@ -194,6 +194,23 @@ void renameExclusion(BaseInstance* instance, const QString& from, const QString&
     }
 }
 
+int excludedCount(BaseInstance* instance)
+{
+    if (!instance || !instance->settings()->contains(g_exclusionSetting)) {
+        return 0;
+    }
+    return static_cast<int>(instance->settings()->get(g_exclusionSetting).toStringList().size());
+}
+
+void clearExclusions(BaseInstance* instance)
+{
+    if (!instance || !instance->settings()->contains(g_exclusionSetting)) {
+        return;
+    }
+    instance->settings()->set(g_exclusionSetting, QStringList());
+    instance->settings()->set(g_unsharedFromSetting, QString());
+}
+
 void setExcluded(BaseInstance* instance, const QString& relativePath, bool excluded, const QString& unsharedFrom)
 {
     if (!instance || !instance->settings()->contains(g_exclusionSetting)) {
@@ -334,6 +351,58 @@ Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
         setExcluded(instance, destination.relativePath, false);
     }
     return converted;
+}
+
+namespace {
+// this launcher's links that includes accepts
+QList<std::pair<RefKey, Ref>> linksOf(ContentStore& store, const std::function<bool(const QString& owner)>& includes)
+{
+    QList<std::pair<RefKey, Ref>> links;
+    for (const auto& link : store.refsSnapshot()) {
+        if (link.first.owner.startsWith(store.clientId() + ':') && (!includes || includes(link.first.owner))) {
+            links.append(link);
+        }
+    }
+    return links;
+}
+}  // namespace
+
+StopReport stopSharing(ContentStore& store,
+                       const std::function<bool(const QString& owner)>& includes,
+                       const std::function<bool(int done, int total)>& progress)
+{
+    StopReport report;
+    const auto links = linksOf(store, includes);
+    for (int done = 0; done < links.size(); done++) {
+        if (progress && !progress(done, static_cast<int>(links.size()))) {
+            report.stopped = true;
+            break;
+        }
+        const auto& key = links[done].first;
+        if (auto unshared = store.unshare(key); !unshared) {
+            report.failed.append(QString("%1: %2").arg(key.relativePath, unshared.error()));
+            continue;
+        }
+        report.unshared++;
+    }
+    if (progress && !report.stopped) {
+        progress(static_cast<int>(links.size()), static_cast<int>(links.size()));
+    }
+    return report;
+}
+
+qint64 linkedSize(ContentStore& store, const std::function<bool(const QString& owner)>& includes)
+{
+    qint64 size = 0;
+    for (const auto& link : linksOf(store, includes)) {
+        size += store.storedSize(link.second.hash);
+    }
+    return size;
+}
+
+int linkCount(ContentStore& store, const std::function<bool(const QString& owner)>& includes)
+{
+    return static_cast<int>(linksOf(store, includes).size());
 }
 
 MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress)

@@ -65,3 +65,22 @@ void MoveStoreTask::executeTask()
         });
     }));
 }
+
+void StopSharingTask::executeTask()
+{
+    setStatus(tr("Making shared files local"));
+    connect(&m_watcher, &QFutureWatcher<SharedContent::StopReport>::finished, this, [this] {
+        m_report = m_watcher.result();
+        if (m_report->stopped) {
+            emitAborted();
+            return;
+        }
+        emitSucceeded();
+    });
+    m_watcher.setFuture(QtConcurrent::run([this] {
+        return SharedContent::stopSharing(*m_store, m_includes, [this](int done, int total) {
+            QMetaObject::invokeMethod(this, [this, done, total] { setProgress(done, total); }, Qt::QueuedConnection);
+            return !m_aborted;
+        });
+    }));
+}

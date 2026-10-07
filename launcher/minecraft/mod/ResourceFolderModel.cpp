@@ -396,6 +396,12 @@ bool ResourceFolderModel::canKeepLocal(const QModelIndex& index) const
            state == SharedContent::FileState::Local;
 }
 
+bool ResourceFolderModel::canStopSharing(const QModelIndex& index) const
+{
+    const auto state = sharedState(index.row());
+    return state == SharedContent::FileState::Shared || state == SharedContent::FileState::Damaged;
+}
+
 bool ResourceFolderModel::canShare(const QModelIndex& index) const
 {
     if (!SharedContent::storeFor(m_instance)) {
@@ -451,6 +457,24 @@ shared_qobject_ptr<SharingActionTask> ResourceFolderModel::keepLocal(const QMode
                     SharedContent::setExcluded(instance, relativePath, true, hash);
                 }
             };
+        });
+    }
+    return sharingTask(tr("Making local copies"), std::move(jobs));
+}
+
+shared_qobject_ptr<SharingActionTask> ResourceFolderModel::stopSharing(const QModelIndexList& indexes)
+{
+    QList<SharingActionTask::Job> jobs;
+    auto* store = sharedStore();
+    for (const auto& index : indexes) {
+        if (!store || index.column() != 0 || !canStopSharing(index)) {
+            continue;
+        }
+        const auto destination = sharedDestination(at(index.row()).fileinfo().absoluteFilePath());
+        jobs.append([store, destination]() -> Result<SharingActionTask::FollowUp> {
+            // nothing is marked: the file is local now, and sharing may include it again
+            TRY(SharedContent::unshareToLocal(*store, destination))
+            return SharingActionTask::FollowUp();
         });
     }
     return sharingTask(tr("Making local copies"), std::move(jobs));

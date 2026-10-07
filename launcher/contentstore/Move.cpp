@@ -21,6 +21,13 @@ QString ContentStore::ownerRoot(const QString& owner) const
     return m_table.owners().value(owner);
 }
 
+qint64 ContentStore::storedSize(const QString& hash) const
+{
+    QMutexLocker locker(&m_mutex);
+    const auto entry = m_table.entries().find(hash);
+    return entry != m_table.entries().end() ? entry->size : 0;
+}
+
 bool ContentStore::isIdle() const
 {
     QMutexLocker locker(&m_mutex);
