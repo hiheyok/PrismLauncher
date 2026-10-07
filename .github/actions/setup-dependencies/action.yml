@@ -119,7 +119,11 @@ runs:
       with:
         python-version: '3.14'
 
+    # Qt is downloaded from mirrors and unpacked on every cache miss, which fails now and then for reasons outside this
+    # repository; a second attempt keeps one such failure from failing the whole build
     - name: Install Qt
+      id: install-qt
+      continue-on-error: true
       uses: jurplel/install-qt-action@v4
       with:
         version: ${{ inputs.qt-version }}
@@ -128,6 +132,23 @@ runs:
         modules: qtimageformats qtnetworkauth
         cache: ${{ inputs.build-type == 'Debug' }}
         arch: ${{ inputs.msystem != '' && 'win64_llvm_mingw' || '' }}
+        # On Windows the archives are unpacked with the runner's 7-Zip rather than py7zr, which has failed there with
+        # "Bad7zFile: Specified path is bad" while unpacking Qt in parallel
+        extra: ${{ runner.os == 'Windows' && '--external 7z' || '' }}
+
+    - name: Install Qt (second attempt)
+      if: ${{ steps.install-qt.outcome == 'failure' }}
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: ${{ inputs.qt-version }}
+        setup-python: false
+        aqtsource: git+https://github.com/miurahr/aqtinstall.git@16db45a70b5905ad596941b223469bc86a56901e
+        modules: qtimageformats qtnetworkauth
+        cache: ${{ inputs.build-type == 'Debug' }}
+        arch: ${{ inputs.msystem != '' && 'win64_llvm_mingw' || '' }}
+        # On Windows the archives are unpacked with the runner's 7-Zip rather than py7zr, which has failed there with
+        # "Bad7zFile: Specified path is bad" while unpacking Qt in parallel
+        extra: ${{ runner.os == 'Windows' && '--external 7z' || '' }}
 
     - name: Set Qt6_DIR
       shell: bash
