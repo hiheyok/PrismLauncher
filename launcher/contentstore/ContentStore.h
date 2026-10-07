@@ -140,8 +140,8 @@ class ContentStore {
         // empty when the user's file was put back at path; otherwise something newer was there, and the user's file
         // was saved here
         QString recoveredPath;
-        // A program was still writing to it when the launcher closed: the saved file holds what it had written by
-        // then, and nothing it wrote later. recoveredPath is empty if the launcher stopped before it could save it.
+        // a program wrote to the backup as it was removed, and the launcher stopped before that could be kept: what it
+        // wrote is lost, and recoveredPath is empty
         bool incomplete = false;
     };
 
@@ -520,8 +520,6 @@ class ContentStore {
     // Puts a changed backup back at its path, or moves it aside if something newer is there; also finishes one a crash
     // interrupted
     Result<bool> restoreBackupLocked(qint64 id, QSet<QString>& unused);
-    // Finishes the salvage of a removed backup once the program that opened it closed it; false while it hasn't
-    Result<bool> finishSalvageLocked(qint64 id, WriterGuard& guard, int attempts = 1);
     // Finishes replacements with a backup that a crash interrupted, then releases backups left behind
     Result<> finishBackupsLocked();
     Result<> lowerWriterVersionLocked();
@@ -542,8 +540,8 @@ class ContentStore {
     PrivilegedLinker m_privilegedLinker;
     std::function<bool(PlacementStep)> m_interruption;
     QList<RestoredFile> m_restoredFiles;
-    // Removed backups that a program opened as they were removed, by transaction: the guard keeps each one until the
-    // program closed it and what it wrote was saved. The backup stays pending until then.
+    // Removed backups that a program opened as they were removed, by transaction, for which no helper could be started
+    // yet: the guard keeps each one until one can.
     std::map<qint64, WriterGuard> m_salvages;
     std::function<qint64()> m_clock;
     std::function<bool(const QString&)> m_unreadable;

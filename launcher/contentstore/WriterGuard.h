@@ -49,17 +49,15 @@ class WriterGuard {
     // the guarded file be removed at once; a program can still reach a file under a Linux lease as it is removed.
     bool keepsEveryWriterOut() const { return m_pin.has_value(); }
 
-    enum class Salvage : std::uint8_t { Waiting, Unchanged, Saved };
-    // For a file removed while guarded, after disturbed() found a program that opened it as it was removed: lets that
-    // program go ahead, while this guard keeps the removed file, and saves its contents at target once the program
-    // closed it, if they no longer hash to expectedDigest. Only a Linux lease keeps hold of a removed file; elsewhere
-    // nothing is saved.
-    void beginSalvage(const QString& target, const QString& expectedDigest);
-    // Whether the program closed the file yet, and what was done then. While it is Waiting, or after an error, the
-    // guard must be kept, as the file is gone once it ends; a later call tries again. A guard that ends while waiting
-    // gives the program a few seconds to finish, then saves what the file holds by then: nothing can keep a file
-    // without a name once this process ends.
-    Result<Salvage> trySalvage();
+    // For a file removed while guarded, after disturbed() found a program that opened it as it was removed: hands the
+    // removed file to a helper process, which keeps it for as long as that program needs, even after the launcher
+    // exited. The helper waits until the program closed the file, then saves what it holds at target, durably, trying
+    // again if that fails. The program may write once this returns. If no helper could be started, the guard keeps the
+    // file, and a later call, or the end of the guard, tries again. Only a Linux lease keeps hold of a removed file;
+    // elsewhere this does nothing.
+    Result<> salvage(const QString& target);
+    // Whether the helper of a salvage to target still runs; target may not exist until it is done
+    static bool salvageRunning(const QString& target);
 
     // the descriptor holding a Linux lease, or -1, so tests can open the file the way another program would
     int descriptorForTesting() const { return m_leaseDescriptor; }
@@ -82,12 +80,6 @@ class WriterGuard {
     std::optional<FS::PinnedFile> m_pin;
     // the descriptor holding a Linux write lease
     int m_leaseDescriptor = -1;
-    // set while a removed file is being salvaged
+    // set while a removed file waits to be handed to a helper
     QString m_salvageTarget;
-    QString m_salvageDigest;
-
-    // always saves a copy when the launcher closes, so a restart can tell an unchanged file from one never saved
-    Result<Salvage> finishSalvage(bool always = false);
-    // whether the program that opened the removed file closed it: only then is a lease granted again
-    bool writerClosed() const;
 };

@@ -254,6 +254,40 @@ class WriterGuardTest : public QObject {
         QVERIFY(backupPath().isEmpty());
     }
 
+    void test_salvageOfARemovedFile()
+    {
+#if !defined(Q_OS_LINUX)
+        QSKIP("Only a Linux lease keeps hold of a removed file");
+#else
+        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
+            QSKIP("This file system doesn't offer leases");
+        }
+        QVERIFY(writeFile(userFile(), "common mod"));
+        std::optional<WriterGuard> guard;
+        {
+            auto acquired = WriterGuard::acquire(userFile());
+            QVERIFY(acquired);
+            guard = std::move(*acquired);
+        }
+        QVERIFY(FS::deleteLink(userFile()));
+        // a program that looked the file up before it was removed opens it now, and only writes a while later
+        const auto removed = QString("/proc/%1/fd/%2").arg(QCoreApplication::applicationPid()).arg(guard->descriptorForTesting());
+        auto writer = std::make_unique<QProcess>();
+        writer->start("sh", { "-c", QString("exec 3>>'%1'; sleep 2; printf late >&3").arg(removed) });
+        QVERIFY(writer->waitForStarted());
+        QTest::qWait(300);
+        QVERIFY(guard->disturbed(userFile()));
+        // handed to a helper, which keeps the removed file after the guard, and this process, are gone
+        const auto target = path("recovered/mod.jar.1");
+        QVERIFY(guard->salvage(target));
+        guard.reset();
+        QVERIFY(WriterGuard::salvageRunning(target));
+        QVERIFY(finished(*writer));
+        QTRY_VERIFY_WITH_TIMEOUT(!WriterGuard::salvageRunning(target), 10000);
+        QCOMPARE(readFile(target), "common modlate");
+#endif
+    }
+
     void test_failedSalvageIsRetried()
     {
 #if !defined(Q_OS_LINUX)
@@ -270,56 +304,18 @@ class WriterGuardTest : public QObject {
         auto writer = appendTo(removed, "late");
         QTest::qWait(300);
         QVERIFY(guard->disturbed(userFile()));
-        guard->beginSalvage(path("saved"), QString::fromLatin1(QCryptographicHash::hash("common mod", QCryptographicHash::Sha256).toHex()));
+        const auto target = path("recovered/mod.jar.1");
+        QVERIFY(guard->salvage(target));
+        // the copy can't be saved for a while: nothing is given up
+        QVERIFY(QFile::setPermissions(path("recovered"), QFile::ReadOwner | QFile::ExeOwner));
         QVERIFY(finished(*writer));
+        QTest::qWait(1500);
+        QVERIFY(WriterGuard::salvageRunning(target));
+        QVERIFY(!QFileInfo::exists(target));
 
-        // saving fails once: nothing is given up
-        FS::Testing::setFaultHook([](FS::Testing::Operation operation, const QString& file) {
-            return operation == FS::Testing::Operation::FlushFile && file.endsWith(".part");
-        });
-        QVERIFY(!guard->trySalvage());
-        FS::Testing::setFaultHook(nullptr);
-        QVERIFY(!QFileInfo::exists(path("saved")));
-        QVERIFY(!QFileInfo::exists(path("saved.part")));
-
-        const auto saved = guard->trySalvage();
-        QVERIFY2(saved, saved ? "" : qPrintable(saved.error()));
-        QCOMPARE(*saved, WriterGuard::Salvage::Saved);
-        QCOMPARE(readFile(path("saved")), "common modlate");
-#endif
-    }
-
-    void test_salvageOfARemovedFile()
-    {
-#if !defined(Q_OS_LINUX)
-        QSKIP("Only a Linux lease keeps hold of a removed file");
-#else
-        if (WriterGuard::tierFor(userFile()) != WriterGuard::Tier::Enforced) {
-            QSKIP("This file system doesn't offer leases");
-        }
-        QVERIFY(writeFile(userFile(), "common mod"));
-        auto guard = WriterGuard::acquire(userFile());
-        QVERIFY(guard);
-        QVERIFY(FS::deleteLink(userFile()));
-        // a program that looked the file up before it was removed opens it now, and waits on the lease
-        const auto removed = QString("/proc/%1/fd/%2").arg(QCoreApplication::applicationPid()).arg(guard->descriptorForTesting());
-        // it keeps the file open a while before it writes
-        auto writer = std::make_unique<QProcess>();
-        writer->start("sh", { "-c", QString("exec 3>>'%1'; sleep 1; printf late >&3").arg(removed) });
-        QVERIFY(writer->waitForStarted());
-        QTest::qWait(300);
-        QVERIFY(guard->disturbed(userFile()));
-        // it may write once the guard lets it go; nothing is given up while it still has the file open
-        guard->beginSalvage(path("saved"), QString::fromLatin1(QCryptographicHash::hash("common mod", QCryptographicHash::Sha256).toHex()));
-        const auto waiting = guard->trySalvage();
-        QVERIFY(waiting);
-        QCOMPARE(*waiting, WriterGuard::Salvage::Waiting);
-        // its write is saved once it closed the file
-        QVERIFY(finished(*writer));
-        const auto saved = guard->trySalvage();
-        QVERIFY2(saved, saved ? "" : qPrintable(saved.error()));
-        QCOMPARE(*saved, WriterGuard::Salvage::Saved);
-        QCOMPARE(readFile(path("saved")), "common modlate");
+        makeWritable(path("recovered"));
+        QTRY_VERIFY_WITH_TIMEOUT(!WriterGuard::salvageRunning(target), 10000);
+        QCOMPARE(readFile(target), "common modlate");
 #endif
     }
 

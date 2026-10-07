@@ -14,10 +14,13 @@
 #if defined(Q_OS_LINUX)
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>
 #include <csignal>
+#include <ctime>
 #include <mutex>
 #elif defined(Q_OS_MACOS)
 #include <libproc.h>
@@ -42,6 +45,97 @@ int leaseSignal()
 
 // Whether a process other than this one has the file open, from /proc. Only processes of the same user can be seen,
 // which are the ones that can write to the user's files.
+// The helper process that saves a removed file. It is forked from a process with other threads, so it may only make
+// async-signal-safe calls: no Qt, no allocation, no locks.
+void sleepMs(long ms)
+{
+    timespec time{ ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&time, nullptr);
+}
+
+bool writeAll(int descriptor, const char* data, ssize_t size)
+{
+    while (size > 0) {
+        const auto written = write(descriptor, data, static_cast<size_t>(size));
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        data += written;
+        size -= written;
+    }
+    return true;
+}
+
+// Copies the file to partial, then puts it at target, both durably
+bool saveCopy(int source, const char* partial, const char* target, const char* dir)
+{
+    const int copy = open(partial, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (copy < 0) {
+        return false;
+    }
+    static char buffer[64 * 1024];
+    off_t offset = 0;
+    bool copied = true;
+    while (true) {
+        const auto bytesRead = pread(source, buffer, sizeof buffer, offset);
+        if (bytesRead < 0 && errno == EINTR) {
+            continue;
+        }
+        if (bytesRead <= 0) {
+            copied = bytesRead == 0;
+            break;
+        }
+        if (!writeAll(copy, buffer, bytesRead)) {
+            copied = false;
+            break;
+        }
+        offset += bytesRead;
+    }
+    copied = copied && fsync(copy) == 0;
+    close(copy);
+    if (!copied || rename(partial, target) != 0) {
+        unlink(partial);
+        return false;
+    }
+    const int folder = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (folder < 0) {
+        return false;
+    }
+    const bool synced = fsync(folder) == 0;
+    close(folder);
+    return synced;
+}
+
+[[noreturn]] void runSalvage(int source, int lock, int maxDescriptor, const char* partial, const char* target, const char* dir)
+{
+    // It may outlive the launcher, so it keeps nothing of it open but the removed file and its own lock, such as the
+    // store's lock
+    for (int descriptor = 3; descriptor < maxDescriptor; descriptor++) {
+        if (descriptor != source && descriptor != lock) {
+            close(descriptor);
+        }
+    }
+    // tries for a day at most, so a folder that never becomes writable doesn't keep it forever
+    for (int attempt = 0; attempt < 24 * 60 * 60; attempt++) {
+        // A lease is only granted while no other program has the file open: the program closed it. Held while copying,
+        // so the copy is consistent.
+        if (fcntl(source, F_SETLEASE, F_WRLCK) != 0) {
+            sleepMs(200);
+            continue;
+        }
+        const bool saved = saveCopy(source, partial, target, dir);
+        fcntl(source, F_SETLEASE, F_UNLCK);
+        if (saved) {
+            _exit(0);
+        }
+        sleepMs(1000);
+    }
+    _exit(1);
+}
+
 bool openedByOthers(const FS::FileId& id)
 {
     const auto self = QString::number(getpid());
@@ -87,18 +181,9 @@ bool openedByOthers(const QString& path)
 WriterGuard::~WriterGuard()
 {
     if (!m_salvageTarget.isEmpty()) {
-        // The file is gone once this ends. The program gets a few seconds to finish writing; after that, what the file
-        // holds is all that can be kept.
-        bool closed = false;
-        for (int waited = 0; waited < 5000 && !(closed = writerClosed()); waited += 50) {
-            QThread::msleep(50);
-        }
-        if (!closed) {
-            qWarning() << "Shared store: a program still has a removed backup open; saving what it wrote so far";
-        }
-        // saved even when unchanged, so the next start can tell that apart from a copy that was never made
-        if (auto saved = finishSalvage(true); !saved) {
-            qWarning() << "Shared store:" << saved.error();
+        // the removed file is gone once this ends, so this is the last chance to hand it to a helper
+        if (auto handed = salvage(m_salvageTarget); !handed) {
+            qWarning() << "Shared store: what a program wrote to a removed backup is lost:" << handed.error();
         }
     }
     release();
@@ -110,7 +195,6 @@ WriterGuard::WriterGuard(WriterGuard&& other) noexcept
     , m_pin(std::move(other.m_pin))
     , m_leaseDescriptor(std::exchange(other.m_leaseDescriptor, -1))
     , m_salvageTarget(std::exchange(other.m_salvageTarget, {}))
-    , m_salvageDigest(std::exchange(other.m_salvageDigest, {}))
 {
     other.m_pin.reset();
 }
@@ -125,7 +209,6 @@ WriterGuard& WriterGuard::operator=(WriterGuard&& other) noexcept
         other.m_pin.reset();
         m_leaseDescriptor = std::exchange(other.m_leaseDescriptor, -1);
         m_salvageTarget = std::exchange(other.m_salvageTarget, {});
-        m_salvageDigest = std::exchange(other.m_salvageDigest, {});
     }
     return *this;
 }
@@ -267,95 +350,73 @@ Result<QString> WriterGuard::sha256(const QString& path) const
     return ObjectFiles::sha256(path);
 }
 
-void WriterGuard::beginSalvage([[maybe_unused]] const QString& target, [[maybe_unused]] const QString& expectedDigest)
+Result<> WriterGuard::salvage([[maybe_unused]] const QString& target)
 {
 #if defined(Q_OS_LINUX)
     if (m_leaseDescriptor < 0) {
-        return;
+        return {};
     }
-    // The program counts as a writer before it waits on the lease, so a lease is only granted again once it closed
-    // the file. Its write can't be lost meanwhile: this descriptor keeps the removed file.
-    fcntl(m_leaseDescriptor, F_SETLEASE, F_UNLCK);
     m_salvageTarget = target;
-    m_salvageDigest = expectedDigest;
-#endif
-}
-
-bool WriterGuard::writerClosed() const
-{
-#if defined(Q_OS_LINUX)
-    return m_leaseDescriptor >= 0 && fcntl(m_leaseDescriptor, F_SETLEASE, F_WRLCK) == 0;
-#else
-    return true;
-#endif
-}
-
-Result<WriterGuard::Salvage> WriterGuard::trySalvage()
-{
-#if defined(Q_OS_LINUX)
-    if (m_salvageTarget.isEmpty()) {
-        return Salvage::Unchanged;
+    const auto dir = QFileInfo(target).absolutePath();
+    QDir().mkpath(dir);
+    // everything the helper needs, prepared before it is forked
+    const auto targetPath = QFile::encodeName(target);
+    const auto partialPath = targetPath + ".part";
+    const auto lockPath = targetPath + ".lock";
+    const auto dirPath = QFile::encodeName(dir);
+    // locked for as long as the helper runs: it inherits the lock, which ends when it exits
+    const int lock = open(lockPath.constData(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (lock < 0) {
+        return std::unexpected(QString("Failed to create %1").arg(QString::fromLocal8Bit(lockPath)));
     }
-    if (!writerClosed()) {
-        return Salvage::Waiting;
+    if (flock(lock, LOCK_EX | LOCK_NB) != 0) {
+        close(lock);
+        return std::unexpected(QString("Another salvage to %1 still runs").arg(target));
     }
-    return finishSalvage();
-#else
-    return Salvage::Unchanged;
-#endif
-}
-
-Result<WriterGuard::Salvage> WriterGuard::finishSalvage([[maybe_unused]] bool always)
-{
-#if defined(Q_OS_LINUX)
-    // Nothing is given up until the copy is durable: on an error the target, the digest and the removed file stay, and
-    // the next call tries again
-    TRY_INTO(const auto digest, sha256(m_salvageTarget))
-    if (digest == m_salvageDigest && !always) {
-        m_salvageTarget.clear();
-        m_salvageDigest.clear();
-        release();
-        return Salvage::Unchanged;
+    const long openMax = sysconf(_SC_OPEN_MAX);
+    const int maxDescriptor = openMax > 0 && openMax < 1 << 20 ? static_cast<int>(openMax) : 1 << 20;
+    const pid_t child = fork();
+    if (child < 0) {
+        close(lock);
+        return std::unexpected(QString("Failed to start the helper that saves %1").arg(target));
     }
-    QDir().mkpath(QFileInfo(m_salvageTarget).absolutePath());
-    // written next to it and renamed into place, so the target is only ever a complete copy
-    const auto partial = m_salvageTarget + ".part";
-    {
-        QFile file(partial);
-        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            return std::unexpected(QString("Failed to create %1").arg(partial));
+    if (child == 0) {
+        // the helper: forked once more and detached, so it is neither a child of the launcher nor ends with it
+        const pid_t helper = fork();
+        if (helper != 0) {
+            _exit(helper > 0 ? 0 : 1);
         }
-        QByteArray buffer(1024 * 1024, Qt::Uninitialized);
-        off_t offset = 0;
-        while (true) {
-            const auto bytesRead = pread(m_leaseDescriptor, buffer.data(), static_cast<std::size_t>(buffer.size()), offset);
-            if (bytesRead < 0) {
-                file.remove();
-                return std::unexpected(QString("Failed to read a removed backup"));
-            }
-            if (bytesRead == 0) {
-                break;
-            }
-            if (file.write(buffer.constData(), bytesRead) != bytesRead) {
-                file.remove();
-                return std::unexpected(QString("Failed to write %1").arg(partial));
-            }
-            offset += bytesRead;
-        }
+        setsid();
+        runSalvage(m_leaseDescriptor, lock, maxDescriptor, partialPath.constData(), targetPath.constData(), dirPath.constData());
     }
-    if (auto durable = FS::flushFile(partial).and_then([&] { return FS::replaceFile(partial, m_salvageTarget); }).and_then([&] {
-            return FS::flushDir(QFileInfo(m_salvageTarget).absolutePath());
-        });
-        !durable) {
-        QFile::remove(partial);
-        return std::unexpected(durable.error());
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
     }
+    close(lock);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return std::unexpected(QString("Failed to start the helper that saves %1").arg(target));
+    }
+    // The helper keeps the removed file now. Only then may the program that opened it go ahead.
     m_salvageTarget.clear();
-    m_salvageDigest.clear();
     release();
-    return Salvage::Saved;
+    return {};
 #else
-    return Salvage::Unchanged;
+    return {};
+#endif
+}
+
+bool WriterGuard::salvageRunning([[maybe_unused]] const QString& target)
+{
+#if defined(Q_OS_LINUX)
+    const int lock = open(QFile::encodeName(target + ".lock").constData(), O_RDWR | O_CLOEXEC);
+    if (lock < 0) {
+        return false;
+    }
+    const bool running = flock(lock, LOCK_EX | LOCK_NB) != 0;
+    close(lock);
+    return running;
+#else
+    return false;
 #endif
 }
 

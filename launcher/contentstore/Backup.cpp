@@ -290,24 +290,33 @@ Result<bool> ContentStore::validateBackupLocked(qint64 id, QSet<QString>& unused
         return restoreBackupLocked(id, unused);
     }
     if (const auto salvage = m_salvages.find(id); salvage != m_salvages.end()) {
-        // removed, but a program that opened it as it was removed still has it open
-        return finishSalvageLocked(id, salvage->second);
+        // removed, and no helper could be started yet to keep it for the program that opened it
+        if (auto handed =
+                salvage->second.salvage(recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id));
+            !handed) {
+            return std::unexpected(handed.error());
+        }
+        m_salvages.erase(salvage);
+        return false;
     }
     if (!pending.salvagePath.isEmpty()) {
-        // A salvage the launcher closed during: it saved what the removed file held then, if it could. Nothing can reach
-        // that file anymore, so this is all there is.
-        if (QFileInfo::exists(pending.salvagePath)) {
-            // nothing was written after all
-            if (const auto digest = ObjectFiles::sha256(pending.salvagePath); digest && *digest == pending.transaction.expectedDigest) {
-                discardFile(pending.salvagePath);
-                TRY(commitLocked({ RefRecord::backupReleased(id) }))
-                return true;
-            }
+        // a helper saves what the program that opened the removed backup wrote, once it closed it
+        if (WriterGuard::salvageRunning(pending.salvagePath)) {
+            return false;
         }
-        const bool saved = QFileInfo::exists(pending.salvagePath);
-        qWarning() << "Shared store: a program was writing to the removed backup of" << ownerPath(pending.key)
-                   << "when the launcher closed;" << (saved ? "what it had written is in " + pending.salvagePath : "it was lost");
-        m_restoredFiles.append({ ownerPath(pending.key), saved ? pending.salvagePath : QString(), true });
+        discardFile(pending.salvagePath + ".lock");
+        if (QFileInfo::exists(pending.salvagePath)) {
+            if (const auto digest = ObjectFiles::sha256(pending.salvagePath); digest && *digest == pending.transaction.expectedDigest) {
+                // nothing was written after all
+                discardFile(pending.salvagePath);
+            } else {
+                m_restoredFiles.append({ ownerPath(pending.key), pending.salvagePath });
+            }
+        } else {
+            // the launcher stopped before a helper took the removed file
+            qWarning() << "Shared store: what a program wrote to the removed backup of" << ownerPath(pending.key) << "is lost";
+            m_restoredFiles.append({ ownerPath(pending.key), QString(), true });
+        }
         TRY(commitLocked({ RefRecord::backupReleased(id) }))
         return true;
     }
@@ -368,38 +377,17 @@ Result<bool> ContentStore::validateBackupLocked(qint64 id, QSet<QString>& unused
         if (auto journaled = commitLocked({ RefRecord::backupSalvaging(id, recovered) }); !journaled) {
             qWarning() << "Shared store:" << journaled.error();
         }
-        guard->beginSalvage(recovered, pending.transaction.expectedDigest);
-        const auto salvage = m_salvages.emplace(id, std::move(*guard)).first;
-        // a moment for one that writes and closes right away
-        return finishSalvageLocked(id, salvage->second, 10);
+        if (auto handed = guard->salvage(recovered); !handed) {
+            // the guard keeps the removed file until a helper takes it
+            qWarning() << "Shared store:" << handed.error();
+            m_salvages.emplace(id, std::move(*guard));
+        }
+        // released once the helper is done
+        return false;
     }
     if (auto flushed = FS::flushDir(QFileInfo(pending.backupPath).absolutePath()); !flushed) {
         return std::unexpected(flushed.error());
     }
-    TRY(commitLocked({ RefRecord::backupReleased(id) }))
-    return true;
-}
-
-Result<bool> ContentStore::finishSalvageLocked(qint64 id, WriterGuard& guard, int attempts)
-{
-    const auto pending = m_table.pendingBackups()[id];
-    auto state = guard.trySalvage();
-    for (int attempt = 1; attempt < attempts && state && *state == WriterGuard::Salvage::Waiting; attempt++) {
-        QThread::msleep(20);
-        state = guard.trySalvage();
-    }
-    if (!state) {
-        return std::unexpected(state.error());
-    }
-    if (*state == WriterGuard::Salvage::Waiting) {
-        return false;
-    }
-    if (*state == WriterGuard::Salvage::Saved) {
-        m_restoredFiles.append(
-            { ownerPath(pending.key), recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id) });
-    }
-    m_salvages.erase(id);
-    TRY(FS::flushDir(QFileInfo(pending.backupPath).absolutePath()))
     TRY(commitLocked({ RefRecord::backupReleased(id) }))
     return true;
 }
