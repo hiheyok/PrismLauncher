@@ -104,6 +104,8 @@ set(CORE_SOURCES
     contentstore/DeduplicateInstanceTask.cpp
     contentstore/SharingActionTask.h
     contentstore/SharingActionTask.cpp
+    contentstore/Sha256.h
+    contentstore/Sha256.cpp
     contentstore/SymlinkAllowList.h
     contentstore/SymlinkAllowList.cpp
 
