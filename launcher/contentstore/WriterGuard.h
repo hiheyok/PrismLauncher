@@ -45,6 +45,15 @@ class WriterGuard {
     // Ends the guard; anything waiting to open the file goes ahead
     void release();
 
+    // For a file removed while guarded, after disturbed() found a program that opened it as it was removed: releases
+    // the guard, waits until that program closed the file, and saves its contents at target if they no longer hash
+    // to expectedDigest. Returns whether it saved them. Only a Linux lease keeps hold of the removed file; elsewhere it
+    // saves nothing.
+    Result<bool> salvage(const QString& target, const QString& expectedDigest);
+
+    // the descriptor holding a Linux lease, or -1, so tests can open the file the way another program would
+    int descriptorForTesting() const { return m_leaseDescriptor; }
+
     // Whether the backup of a replaced file must wait for a later validation instead of being removed right away.
     // Only a Windows pin keeps every program away until the backup is gone. A Linux lease can't: a program that opens
     // the file between the last look at the lease and its release gets the backup, and would lose its write if the

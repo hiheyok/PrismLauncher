@@ -1,6 +1,7 @@
 #include "WriterGuard.h"
 
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -244,6 +245,72 @@ Result<QString> WriterGuard::sha256(const QString& path) const
     }
 #endif
     return ObjectFiles::sha256(path);
+}
+
+Result<bool> WriterGuard::salvage([[maybe_unused]] const QString& target, [[maybe_unused]] const QString& expectedDigest)
+{
+#if defined(Q_OS_LINUX)
+    if (m_leaseDescriptor < 0) {
+        release();
+        return false;
+    }
+    // The program counts as a writer before it waits on the lease, so a lease is only granted again once it closed
+    // the file. Its write can't be lost meanwhile: this descriptor keeps the removed file.
+    fcntl(m_leaseDescriptor, F_SETLEASE, F_UNLCK);
+    constexpr int waitMs = 20;
+    constexpr int timeoutMs = 30000;
+    bool closed = false;
+    for (int waited = 0; waited < timeoutMs; waited += waitMs) {
+        if (fcntl(m_leaseDescriptor, F_SETLEASE, F_WRLCK) == 0) {
+            closed = true;
+            break;
+        }
+        usleep(waitMs * 1000);
+    }
+    if (!closed) {
+        qWarning() << "Shared store: a program still has a removed backup open; saving what it wrote so far";
+    }
+    auto digest = sha256(target);
+    if (!digest) {
+        release();
+        return std::unexpected(digest.error());
+    }
+    if (*digest == expectedDigest) {
+        release();
+        return false;
+    }
+    QDir().mkpath(QFileInfo(target).absolutePath());
+    QFile file(target);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+        release();
+        return std::unexpected(QString("Failed to create %1").arg(target));
+    }
+    QByteArray buffer(1024 * 1024, Qt::Uninitialized);
+    off_t offset = 0;
+    while (true) {
+        const auto bytesRead = pread(m_leaseDescriptor, buffer.data(), static_cast<std::size_t>(buffer.size()), offset);
+        if (bytesRead < 0) {
+            release();
+            return std::unexpected(QString("Failed to read a removed backup"));
+        }
+        if (bytesRead == 0) {
+            break;
+        }
+        if (file.write(buffer.constData(), bytesRead) != bytesRead) {
+            release();
+            return std::unexpected(QString("Failed to write %1").arg(target));
+        }
+        offset += bytesRead;
+    }
+    file.close();
+    release();
+    TRY(FS::flushFile(target))
+    TRY(FS::flushDir(QFileInfo(target).absolutePath()))
+    return true;
+#else
+    release();
+    return false;
+#endif
 }
 
 void WriterGuard::release()

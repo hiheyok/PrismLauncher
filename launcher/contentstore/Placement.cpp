@@ -603,6 +603,8 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
             qWarning() << "Shared store:" << released.error();
         }
     }
+    // a program waiting on a guard gets the file now, so the backups that await a validation are only checked after
+    guards.clear();
 
     // the files that were replaced may not be used by anything anymore
     QSet<QString> replaced;
@@ -614,6 +616,10 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
     }
     if (auto released = releaseLocked(replaced); !released) {
         qWarning() << "Shared store:" << released.error();
+    }
+    // at the end of the batch: backups no other program has open are validated now, the others later
+    if (!m_table.pendingBackups().isEmpty()) {
+        validateBackupsLocked();
     }
     return results();
 }

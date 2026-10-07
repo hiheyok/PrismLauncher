@@ -133,6 +133,14 @@ class ContentStore {
         bool allowCopy = true;
     };
 
+    // A user's file that a pending validation found changed after it was replaced
+    struct RestoredFile {
+        QString path;
+        // empty when the user's file was put back at path; otherwise something newer was there, and the user's file
+        // was saved here
+        QString recoveredPath;
+    };
+
     struct UnshareResult {
         // the stored file the destination was linked to
         QString hash;
@@ -222,6 +230,14 @@ class ContentStore {
         Aborting,
         // placements committed, before the backups of replacements are removed
         Committed,
+        // a validation found a backup changed and recorded that it puts it back
+        RestoreBegun,
+        // the backup was put back, before that is recorded
+        Restored,
+        // something newer is at the path, and the backup's recovered path was recorded
+        ConflictBegun,
+        // the backup was moved to its recovered path, before that is recorded
+        ConflictMoved,
     };
 
     struct ConvertOptions {
@@ -382,6 +398,12 @@ class ContentStore {
     // Creates the links with the launcher's elevated helper, on Windows; null elsewhere
     static PrivilegedLinker defaultPrivilegedLinker();
 
+    // Validates the backups of replacements that await it: an unchanged one is removed, a changed one is put back.
+    // Each one waits until no other program has it open. Returns how many are left for later.
+    Result<int> validatePendingBackups();
+    // The user's files that validations found changed since the last call
+    QList<RestoredFile> takeRestoredFiles();
+
     void setInterruptionForTesting(std::function<bool(PlacementStep)> interruption) { m_interruption = std::move(interruption); }
     // seconds since the epoch, for tests that need time to pass
     void setClockForTesting(std::function<qint64()> clock) { m_clock = std::move(clock); }
@@ -483,9 +505,15 @@ class ContentStore {
                                     const QString& expectedDigest,
                                     std::optional<WriterGuard>& guard,
                                     QString& error);
-    // Removes the backups of committed replacements
     // Removes the backups of committed replacements, except those that await a validation
     Result<> releaseBackupsLocked();
+    // Validates the backups that await it, and finishes restores a crash interrupted. Returns how many are left.
+    int validateBackupsLocked();
+    // Validates one; false if it must be tried again later, such as while another program has the file open
+    Result<bool> validateBackupLocked(qint64 id, QSet<QString>& unused);
+    // Puts a changed backup back at its path, or moves it aside if something newer is there; also finishes one a crash
+    // interrupted
+    Result<bool> restoreBackupLocked(qint64 id, QSet<QString>& unused);
     // Finishes replacements with a backup that a crash interrupted, then releases backups left behind
     Result<> finishBackupsLocked();
     Result<> lowerWriterVersionLocked();
@@ -505,6 +533,7 @@ class ContentStore {
     LinkMode m_linkMode = LinkMode::Auto;
     PrivilegedLinker m_privilegedLinker;
     std::function<bool(PlacementStep)> m_interruption;
+    QList<RestoredFile> m_restoredFiles;
     std::function<qint64()> m_clock;
     std::function<bool(const QString&)> m_unreadable;
 };

@@ -119,12 +119,22 @@ struct Transaction {
     bool operator==(const Transaction&) const = default;
 };
 
-// The backup of a committed replacement that wasn't released yet
+// The backup of a committed replacement that wasn't released yet: a pending validation
 struct PendingBackup {
     RefKey key;
     QString backupPath;
     // kept until a validation (format version 2's pending validations); never removed by the ordinary release
     bool awaitValidation = false;
+    // the committed transaction, which tells what the backup and the path should hold; its id is 0 for a backup
+    // recorded before validations existed, which is released without one
+    Transaction transaction;
+    // the ref at the path before the commit, and the one the commit made; a restore puts the old one back
+    std::optional<Ref> oldRef;
+    std::optional<Ref> newRef;
+    // the backup turned out changed, and is being put back (RESTORE_BEGIN)
+    bool restoring = false;
+    // something newer is at the path, so the backup is being moved here instead (RESTORE_CONFLICT_BEGIN)
+    QString recoveredPath;
 
     bool operator==(const PendingBackup&) const = default;
 };
@@ -196,6 +206,14 @@ QJsonObject backup(qint64 transactionId,
 QJsonObject aborting(qint64 transactionId);
 // the backup of a committed replacement was removed
 QJsonObject backupReleased(qint64 transactionId);
+// The backup of a committed replacement changed, so the user's file goes back; written before anything on disk changes
+QJsonObject restoreBegin(qint64 transactionId);
+// the backup is back at the path: the ref the commit made is replaced by the one before it, and the validation ends
+QJsonObject restoreCommit(qint64 transactionId);
+// Something newer is at the path, so the backup is moved to recoveredPath instead; written before it is moved
+QJsonObject restoreConflictBegin(qint64 transactionId, const QString& recoveredPath);
+// the backup was moved to its recovered path; the refs stay as they are, and the validation ends
+QJsonObject restoreConflict(qint64 transactionId);
 // The current generation turned out damaged: it is kept at retiredPath for the links that use it, and the hash has no
 // current generation until an intact copy is stored
 QJsonObject retire(const QString& hash, int generation, const QString& retiredPath);

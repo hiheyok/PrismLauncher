@@ -220,6 +220,195 @@ Result<> ContentStore::releaseBackupsLocked()
     return commitLocked(records);
 }
 
+namespace {
+// Whether the ref at the path is still the one the commit made, apart from what reconciliations noticed about it
+bool sameRef(const std::optional<Ref>& first, const std::optional<Ref>& second)
+{
+    if (!first || !second) {
+        return !first && !second;
+    }
+    return first->hash == second->hash && first->kind == second->kind && first->generation == second->generation;
+}
+
+// Inside the owner's folder, so on the same volume as the path, and outside every content folder, so mod loaders don't
+// see it. The transaction id keeps two of the same file apart.
+QString recoveredPathFor(const QString& root, const QString& relativePath, qint64 id)
+{
+    return QDir(root).filePath(QString(".prism-recovered/%1.%2").arg(relativePath).arg(id));
+}
+}  // namespace
+
+Result<int> ContentStore::validatePendingBackups()
+{
+    QMutexLocker locker(&m_mutex);
+    if (m_state != State::Writable) {
+        return std::unexpected(QString("The shared store can't be changed"));
+    }
+    return validateBackupsLocked();
+}
+
+QList<ContentStore::RestoredFile> ContentStore::takeRestoredFiles()
+{
+    QMutexLocker locker(&m_mutex);
+    return std::exchange(m_restoredFiles, {});
+}
+
+int ContentStore::validateBackupsLocked()
+{
+    int left = 0;
+    QSet<QString> unused;
+    for (const auto id : m_table.pendingBackups().keys()) {
+        const auto& pending = m_table.pendingBackups()[id];
+        if (!pending.awaitValidation && !pending.restoring) {
+            // removed by the ordinary release
+            continue;
+        }
+        if (pending.transaction.id == 0 || !pending.transaction.oldIdentity || !m_table.owners().contains(pending.key.owner)) {
+            // nothing to validate it against, or its instance isn't known anymore: kept for a person to look at
+            left++;
+            continue;
+        }
+        auto validated = validateBackupLocked(id, unused);
+        if (!validated) {
+            qWarning() << "Shared store:" << validated.error();
+        }
+        if (!validated || !*validated) {
+            left++;
+        }
+    }
+    if (auto released = releaseLocked(unused); !released) {
+        qWarning() << "Shared store:" << released.error();
+    }
+    return left;
+}
+
+Result<bool> ContentStore::validateBackupLocked(qint64 id, QSet<QString>& unused)
+{
+    const auto pending = m_table.pendingBackups()[id];
+    if (pending.restoring) {
+        return restoreBackupLocked(id, unused);
+    }
+    if (!inspect(pending.backupPath).exists) {
+        // removed after the last check, before that was recorded
+        if (auto flushed = FS::flushDir(QFileInfo(pending.backupPath).absolutePath()); !flushed) {
+            return std::unexpected(flushed.error());
+        }
+        TRY(commitLocked({ RefRecord::backupReleased(id) }))
+        return true;
+    }
+    // only while no other program has it open; until then it stays pending
+    auto guard = WriterGuard::acquire(pending.backupPath);
+    if (!guard) {
+        return false;
+    }
+    auto transaction = pending.transaction;
+    transaction.backupPath = pending.backupPath;
+    if (!backupIsIntact(transaction, &*guard) || guard->disturbed(pending.backupPath)) {
+        // something wrote to it after the replacement: the user's file goes back
+        TRY(commitLocked({ RefRecord::restoreBegin(id) }))
+        if (interrupted(PlacementStep::RestoreBegun)) {
+            return std::unexpected(interruptedError());
+        }
+        guard->release();
+        return restoreBackupLocked(id, unused);
+    }
+
+    discardFile(pending.backupPath);
+    if (inspect(pending.backupPath).exists) {
+        return false;
+    }
+    if (guard->disturbed(pending.backupPath)) {
+        // A program opened it as it was removed, and now waits on the lease with a file that has no name. Whatever it
+        // writes is saved once it closes the file.
+        const auto recovered = recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id);
+        auto salvaged = guard->salvage(recovered, pending.transaction.expectedDigest);
+        if (!salvaged) {
+            qWarning() << "Shared store:" << salvaged.error();
+        } else if (*salvaged) {
+            m_restoredFiles.append({ ownerPath(pending.key), recovered });
+        }
+    }
+    if (auto flushed = FS::flushDir(QFileInfo(pending.backupPath).absolutePath()); !flushed) {
+        return std::unexpected(flushed.error());
+    }
+    TRY(commitLocked({ RefRecord::backupReleased(id) }))
+    return true;
+}
+
+Result<bool> ContentStore::restoreBackupLocked(qint64 id, QSet<QString>& unused)
+{
+    const auto pending = m_table.pendingBackups()[id];
+    const auto path = ownerPath(pending.key);
+    const auto& old = *pending.transaction.oldIdentity;
+    const bool backupExists = inspect(pending.backupPath).exists;
+    const auto finished = [&](const QJsonObject& record, const QString& recoveredPath) -> Result<bool> {
+        TRY(commitLocked({ record }))
+        if (record["type"].toString() == "restoreCommit" && pending.newRef) {
+            unused.insert(pending.newRef->hash);
+        }
+        m_restoredFiles.append({ path, recoveredPath });
+        return true;
+    };
+
+    if (!pending.recoveredPath.isEmpty()) {
+        // moving it aside was recorded: finish that
+        if (!backupExists && isFile(pending.recoveredPath, old)) {
+            return finished(RefRecord::restoreConflict(id), pending.recoveredPath);
+        }
+        if (!backupExists) {
+            return std::unexpected(
+                QString("The changed backup of %1 is neither at %2 nor at %3").arg(path, pending.backupPath, pending.recoveredPath));
+        }
+        QDir().mkpath(QFileInfo(pending.recoveredPath).absolutePath());
+        TRY(FS::replaceFile(pending.backupPath, pending.recoveredPath))
+        if (interrupted(PlacementStep::ConflictMoved)) {
+            return std::unexpected(interruptedError());
+        }
+        TRY(FS::flushDir(QFileInfo(pending.recoveredPath).absolutePath()))
+        TRY(FS::flushDir(QFileInfo(pending.backupPath).absolutePath()))
+        return finished(RefRecord::restoreConflict(id), pending.recoveredPath);
+    }
+
+    if (!backupExists && isFile(path, old)) {
+        // put back before a crash, which came before it was recorded
+        TRY(FS::flushDir(QFileInfo(path).absolutePath()))
+        return finished(RefRecord::restoreCommit(id), {});
+    }
+    if (!backupExists) {
+        return std::unexpected(QString("The changed backup %1 of %2 is gone").arg(pending.backupPath, path));
+    }
+
+    // The path must still hold what the replacement put there, with the ref it made; anything else is newer and is
+    // never overwritten. The path is held still while it is checked and replaced.
+    std::optional<WriterGuard> pathGuard;
+    if (!inspect(path).isSymbolicLink && inspect(path).exists) {
+        auto acquired = WriterGuard::acquire(path);
+        if (!acquired) {
+            // in use, such as by a running game; tried again later
+            return false;
+        }
+        pathGuard = std::move(*acquired);
+    }
+    auto transaction = pending.transaction;
+    if (holdsNewFile(transaction, path) && sameRef(m_table.ref(pending.key), pending.newRef)) {
+        TRY(FS::replaceFile(pending.backupPath, path))
+        if (interrupted(PlacementStep::Restored)) {
+            return std::unexpected(interruptedError());
+        }
+        TRY(FS::flushDir(QFileInfo(path).absolutePath()))
+        return finished(RefRecord::restoreCommit(id), {});
+    }
+    pathGuard.reset();
+
+    // something newer is there: the user's changed file is saved aside instead, at a path recorded first
+    const auto recovered = recoveredPathFor(m_table.owners().value(pending.key.owner), pending.key.relativePath, id);
+    TRY(commitLocked({ RefRecord::restoreConflictBegin(id, recovered) }))
+    if (interrupted(PlacementStep::ConflictBegun)) {
+        return std::unexpected(interruptedError());
+    }
+    return restoreBackupLocked(id, unused);
+}
+
 Result<> ContentStore::finishBackupsLocked()
 {
     QList<QJsonObject> records;

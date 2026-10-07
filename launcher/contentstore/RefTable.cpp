@@ -137,6 +137,30 @@ QJsonObject transactionToJson(const Transaction& transaction)
     return json;
 }
 
+QJsonObject refToJson(const Ref& ref)
+{
+    QJsonObject json{
+        { "hash", ref.hash }, { "kind", toString(ref.kind) }, { "generation", ref.generation }, { "state", toString(ref.state) }
+    };
+    if (ref.lostSince) {
+        json["lostSince"] = *ref.lostSince;
+    }
+    return json;
+}
+
+Result<Ref> refFromJson(const QJsonObject& json)
+{
+    Ref ref;
+    ref.hash = json["hash"].toString();
+    TRY_INTO(ref.kind, linkKindFromString(json["kind"].toString()))
+    ref.generation = json["generation"].toInt();
+    TRY_INTO(ref.state, refStateFromString(json["state"].toString()))
+    if (json.contains("lostSince")) {
+        ref.lostSince = json["lostSince"].toInteger();
+    }
+    return ref;
+}
+
 Result<Transaction> transactionFromJson(const QJsonObject& json)
 {
     Transaction transaction;
@@ -388,6 +412,26 @@ QJsonObject aborting(qint64 transactionId)
     return { { "type", "aborting" }, { "transaction", transactionId } };
 }
 
+QJsonObject restoreBegin(qint64 transactionId)
+{
+    return { { "type", "restoreBegin" }, { "transaction", transactionId } };
+}
+
+QJsonObject restoreCommit(qint64 transactionId)
+{
+    return { { "type", "restoreCommit" }, { "transaction", transactionId } };
+}
+
+QJsonObject restoreConflictBegin(qint64 transactionId, const QString& recoveredPath)
+{
+    return { { "type", "restoreConflictBegin" }, { "transaction", transactionId }, { "recoveredPath", recoveredPath } };
+}
+
+QJsonObject restoreConflict(qint64 transactionId)
+{
+    return { { "type", "restoreConflict" }, { "transaction", transactionId } };
+}
+
 QJsonObject backupReleased(qint64 transactionId)
 {
     return { { "type", "backupReleased" }, { "transaction", transactionId } };
@@ -429,6 +473,7 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
         return std::unexpected(QString("Commit of transaction %1 before it was prepared").arg(transactionId));
     }
 
+    const auto oldRef = ref(transaction.key);
     if (*transaction.preparedKind == PlacementKind::Local) {
         // the path now holds a local copy, which nothing in the store depends on
         m_refs.remove(transaction.key);
@@ -451,7 +496,12 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
     }
     if (!transaction.backupPath.isEmpty()) {
         // the backup stays until it is removed and that is recorded
-        m_pendingBackups[transactionId] = { transaction.key, transaction.backupPath, transaction.awaitValidation };
+        PendingBackup pending{ transaction.key, transaction.backupPath, transaction.awaitValidation, transaction,
+                               oldRef,          ref(transaction.key) };
+        if (pending.newRef) {
+            pending.transaction.generation = pending.newRef->generation;
+        }
+        m_pendingBackups[transactionId] = pending;
     }
     m_transactions.erase(it);
     return {};
@@ -616,6 +666,29 @@ Result<> RefTable::apply(const QJsonObject& record)
     }
     if (type == "backupReleased") {
         m_pendingBackups.remove(record["transaction"].toInteger());
+        return {};
+    }
+    if (type == "restoreBegin" || type == "restoreConflictBegin" || type == "restoreCommit" || type == "restoreConflict") {
+        const auto pending = m_pendingBackups.find(record["transaction"].toInteger());
+        if (pending == m_pendingBackups.end() || pending->transaction.id == 0) {
+            return std::unexpected(QString("Restore of an unknown backup"));
+        }
+        if (type == "restoreBegin") {
+            pending->restoring = true;
+        } else if (type == "restoreConflictBegin") {
+            pending->restoring = true;
+            pending->recoveredPath = record["recoveredPath"].toString();
+        } else if (type == "restoreCommit") {
+            // the old file is back: its ref, if it had one, replaces the one the commit made
+            if (pending->oldRef && m_entries.contains(pending->oldRef->hash)) {
+                m_refs[pending->key] = *pending->oldRef;
+            } else {
+                m_refs.remove(pending->key);
+            }
+            m_pendingBackups.erase(pending);
+        } else {
+            m_pendingBackups.erase(pending);
+        }
         return {};
     }
     if (type == "freeze") {
@@ -810,6 +883,21 @@ QJsonObject RefTable::snapshot() const
             if (it->awaitValidation) {
                 json["awaitValidation"] = true;
             }
+            if (it->transaction.id != 0) {
+                json["transaction"] = transactionToJson(it->transaction);
+            }
+            if (it->oldRef) {
+                json["oldRef"] = refToJson(*it->oldRef);
+            }
+            if (it->newRef) {
+                json["newRef"] = refToJson(*it->newRef);
+            }
+            if (it->restoring) {
+                json["restoring"] = true;
+            }
+            if (!it->recoveredPath.isEmpty()) {
+                json["recoveredPath"] = it->recoveredPath;
+            }
             pending[QString::number(it.key())] = json;
         }
         snapshot["pendingBackups"] = pending;
@@ -892,8 +980,19 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
     const auto pending = snapshot["pendingBackups"].toObject();
     for (auto it = pending.begin(); it != pending.end(); ++it) {
         const auto json = it->toObject();
-        table.m_pendingBackups[it.key().toLongLong()] = { keyFromJson(json["key"].toObject()), json["backupPath"].toString(),
-                                                          json["awaitValidation"].toBool() };
+        PendingBackup backup{ keyFromJson(json["key"].toObject()), json["backupPath"].toString(), json["awaitValidation"].toBool() };
+        if (json.contains("transaction")) {
+            TRY_INTO(backup.transaction, transactionFromJson(json["transaction"].toObject()))
+        }
+        if (json.contains("oldRef")) {
+            TRY_INTO(backup.oldRef, refFromJson(json["oldRef"].toObject()))
+        }
+        if (json.contains("newRef")) {
+            TRY_INTO(backup.newRef, refFromJson(json["newRef"].toObject()))
+        }
+        backup.restoring = json["restoring"].toBool();
+        backup.recoveredPath = json["recoveredPath"].toString();
+        table.m_pendingBackups[it.key().toLongLong()] = backup;
     }
     const auto freezes = snapshot["freezes"].toObject();
     for (auto it = freezes.begin(); it != freezes.end(); ++it) {
