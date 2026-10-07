@@ -68,6 +68,13 @@ std::unique_ptr<QProcess> appendTo(const QString& path, const QString& text)
     return process;
 }
 
+// Whether the process finished within the time, including before this was called: waitForFinished alone fails for a
+// process that already did
+bool finished(QProcess& process, int timeoutMs = 10000)
+{
+    return process.state() == QProcess::NotRunning || process.waitForFinished(timeoutMs) || process.state() == QProcess::NotRunning;
+}
+
 using Step = ContentStore::PlacementStep;
 }  // namespace
 
@@ -187,7 +194,7 @@ class WriterGuardTest : public QObject {
         const auto placed = m_store->placeAt({ destination(), hash, *identity, hash });
         m_store->setInterruptionForTesting(nullptr);
         QVERIFY(writer);
-        writer->waitForFinished(10000);
+        QVERIFY(finished(*writer));
 #if defined(Q_OS_WIN)
         // pinned: the other program couldn't open the file, and the replacement went ahead
         QVERIFY2(placed, placed ? "" : qPrintable(placed.error()));
@@ -233,7 +240,7 @@ class WriterGuardTest : public QObject {
         QVERIFY(m_store->placeAt({ destination(), hash, *identity, hash }));
         m_store->setInterruptionForTesting(nullptr);
         if (writer) {
-            QVERIFY(writer->waitForFinished(10000));
+            QVERIFY(finished(*writer));
             // validated once the program closed it: changed, so the user's file is back, with the write
             QCOMPARE(*m_store->validatePendingBackups(), 0);
             QCOMPARE(FS::fileId(userFile()), before);
@@ -269,7 +276,7 @@ class WriterGuardTest : public QObject {
             guard->salvage(path("saved"), QString::fromLatin1(QCryptographicHash::hash("common mod", QCryptographicHash::Sha256).toHex()));
         QVERIFY2(saved, saved ? "" : qPrintable(saved.error()));
         QVERIFY(*saved);
-        QVERIFY(writer->waitForFinished(10000));
+        QVERIFY(finished(*writer));
         QCOMPARE(readFile(path("saved")), "common modlate");
 #endif
     }
