@@ -7,6 +7,7 @@
 #include "FileSystemPrimitives.h"
 #include "contentstore/ObjectFiles.h"
 #include "contentstore/StoreFiles.h"
+#include "contentstore/WriterGuard.h"
 
 namespace {
 using StoreFiles::discardFile;
@@ -31,14 +32,15 @@ bool isFile(const QString& path, const StoredIdentity& identity)
 
 // Whether the backup is still exactly the old file: the same file, with the same size and time, and the expected
 // contents. Its change time and link count are left out, as making the backup and the swap change them.
-bool backupIsIntact(const Transaction& transaction)
+bool backupIsIntact(const Transaction& transaction, const WriterGuard* guard = nullptr)
 {
     const auto& old = *transaction.oldIdentity;
     const auto identity = FS::identity(transaction.backupPath);
     if (!identity || !old.sameFile(identity->fileId) || identity->size != old.size || identity->modifiedTime != old.modifiedTime) {
         return false;
     }
-    const auto digest = ObjectFiles::sha256(transaction.backupPath);
+    // through the guard where there is one, as opening the file again would disturb a Linux lease
+    const auto digest = guard ? guard->sha256(transaction.backupPath) : ObjectFiles::sha256(transaction.backupPath);
     return digest && *digest == transaction.expectedDigest;
 }
 
@@ -112,6 +114,7 @@ QList<QJsonObject> finish(const Transaction& transaction, const QString& path)
 ContentStore::BackupSwap ContentStore::swapWithBackupLocked(Transaction& transaction,
                                                             const QString& path,
                                                             const QString& expectedDigest,
+                                                            std::optional<WriterGuard>& guard,
                                                             QString& error)
 {
     const auto dir = QFileInfo(path).absolutePath();
@@ -122,13 +125,14 @@ ContentStore::BackupSwap ContentStore::swapWithBackupLocked(Transaction& transac
     };
 
     // no other program can start writing to the file until it is swapped (only enforced on Windows)
-    std::optional<FS::PinnedFile> pin;
+    // other programs are kept from writing to the file, or noticed when they open it, until it was replaced and its
+    // backup released
     {
-        auto pinned = FS::pinFile(path);
-        if (!pinned) {
-            return fail(pinned.error(), BackupSwap::RolledBack);
+        auto acquired = WriterGuard::acquire(path);
+        if (!acquired) {
+            return fail(acquired.error(), BackupSwap::RolledBack);
         }
-        pin = std::move(*pinned);
+        guard = std::move(*acquired);
     }
     if (const auto now = FS::identity(path); !now || StoredIdentity::from(*now) != old) {
         return fail(QString("%1 changed while it was being replaced").arg(path), BackupSwap::RolledBack);
@@ -171,13 +175,13 @@ ContentStore::BackupSwap ContentStore::swapWithBackupLocked(Transaction& transac
     if (auto swapped = FS::replaceFile(transaction.temporaryPath, path).and_then([&] { return FS::flushDir(dir); }); !swapped) {
         return rollBack(swapped.error());
     }
-    pin.reset();
     if (interrupted(PlacementStep::Swapped)) {
         return fail(interruptedError(), BackupSwap::Interrupted);
     }
 
-    // 4. the backup must still be exactly the old file; otherwise something wrote to it, and it goes back
-    if (!backupIsIntact(transaction)) {
+    // 4. the backup must still be exactly the old file, and no other program may have opened it meanwhile; otherwise
+    // it goes back. A program waiting on a Linux lease gets the file only after it is back.
+    if (!backupIsIntact(transaction, &*guard) || guard->disturbed(transaction.backupPath)) {
         transaction.aborting = true;
         if (auto journaled = commitLocked({ RefRecord::aborting(transaction.id) }); !journaled) {
             return fail(journaled.error(), BackupSwap::Unresolved);
@@ -185,15 +189,18 @@ ContentStore::BackupSwap ContentStore::swapWithBackupLocked(Transaction& transac
         if (interrupted(PlacementStep::Aborting)) {
             return fail(interruptedError(), BackupSwap::Interrupted);
         }
-        return rollBack(QString("%1 was written to while it was being replaced; it was put back").arg(path));
+        return rollBack(QString("%1 was opened by another program while it was being replaced; it was put back").arg(path));
     }
     return BackupSwap::Swapped;
 }
 
-Result<> ContentStore::releaseBackupsLocked()
+Result<> ContentStore::releaseBackupsLocked(const QSet<qint64>& kept)
 {
     QList<QJsonObject> records;
     for (auto it = m_table.pendingBackups().begin(); it != m_table.pendingBackups().end(); ++it) {
+        if (kept.contains(it.key())) {
+            continue;
+        }
         discardFile(it->backupPath);
         if (QFileInfo::exists(it->backupPath)) {
             continue;

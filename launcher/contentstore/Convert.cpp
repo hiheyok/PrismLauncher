@@ -128,6 +128,10 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
     if (info.isSymbolicLink() || !info.isFile()) {
         return skipped(QString("%1 isn't a regular file").arg(path));
     }
+    if (!options.allowNetworkVolumes && FS::isNetworkVolume(path)) {
+        // programs on other computers can change it without this one noticing
+        return skipped(QString("%1 is on a network drive, so converting it needs confirmation").arg(path));
+    }
 
     // already a stored file: a recorded link, or one nobody recorded yet
     if (const auto hash = storedHashOf(path)) {

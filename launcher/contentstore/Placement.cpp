@@ -476,6 +476,8 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
 
     // 4. Swap each new file into place, if the destination still holds what was recorded
     records.clear();
+    // the guards of replaced user's files by transaction, held until their backups are released
+    std::vector<std::pair<qint64, WriterGuard>> guards;
 
     // Minecraft refuses symbolically linked packs unless their target is allowed, so that is durable before any swap
     QMap<QString, Result<>> allowedRoots;
@@ -502,9 +504,11 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         if (!item.placement.backupDigest.isEmpty() && item.oldIsRegularFile && item.transaction.oldIdentity) {
             // the user's own file: kept aside until it is proven that nothing wrote to it meanwhile
             QString error;
-            switch (swapWithBackupLocked(item.transaction, item.path, item.placement.backupDigest, error)) {
+            std::optional<WriterGuard> guard;
+            switch (swapWithBackupLocked(item.transaction, item.path, item.placement.backupDigest, guard, error)) {
                 case BackupSwap::Swapped:
                     item.swapped = true;
+                    guards.emplace_back(item.transaction.id, std::move(*guard));
                     continue;
                 case BackupSwap::RolledBack:
                     item.fail(error);
@@ -593,7 +597,17 @@ QList<Result<PlacementKind>> ContentStore::place(const QList<Placement>& placeme
         return interruptedResults();
     }
     if (!m_table.pendingBackups().isEmpty()) {
-        if (auto released = releaseBackupsLocked(); !released) {
+        // A program that opened the old file after it was checked waits on the guard, holding the backup. Removing the
+        // backup would lose its write, so that backup is kept pending. The guards are released only after this.
+        QSet<qint64> kept;
+        for (const auto& [id, guard] : guards) {
+            if (const auto pending = m_table.pendingBackups().find(id);
+                pending != m_table.pendingBackups().end() && guard.disturbed(pending->backupPath)) {
+                qWarning() << "Shared store: another program opened" << pending->backupPath << "while it was replaced; it is kept";
+                kept.insert(id);
+            }
+        }
+        if (auto released = releaseBackupsLocked(kept); !released) {
             qWarning() << "Shared store:" << released.error();
         }
     }
