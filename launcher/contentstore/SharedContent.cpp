@@ -279,12 +279,7 @@ ShareReport shareInstance(ContentStore& store,
     ShareReport report;
     const auto files = shareableFiles(gameRoot);
     // what is stored already, so a file that becomes a link to it saves its size
-    QSet<QString> stored;
-    for (const auto& entry : store.table().entries()) {
-        if (entry.current) {
-            stored.insert(entry.hash);
-        }
-    }
+    auto stored = store.storedHashes();
     for (int done = 0; done < files.size(); done++) {
         if (progress && !progress(done, static_cast<int>(files.size()))) {
             report.stopped = true;

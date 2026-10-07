@@ -40,5 +40,9 @@ class DeduplicateInstanceTask : public Task {
     std::optional<SharedContent::ShareReport> m_report;
     QList<ContentStore::RestoredFile> m_restoredFiles;
     std::atomic<bool> m_aborted = false;
-    QFutureWatcher<SharedContent::ShareReport> m_watcher;
+    struct Outcome {
+        SharedContent::ShareReport report;
+        QList<ContentStore::RestoredFile> restoredFiles;
+    };
+    QFutureWatcher<Outcome> m_watcher;
 };

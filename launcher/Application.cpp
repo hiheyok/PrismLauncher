@@ -1319,33 +1319,43 @@ void Application::shareNextInstance()
         if (!instance || instance->isRunning() || !m_contentStore || !m_contentStore->isWritable()) {
             continue;
         }
-        m_shareTask = makeShared<DeduplicateInstanceTask>(m_contentStore.get(), instance);
-        connect(m_shareTask.get(), &Task::failed, this,
+        auto task = makeShared<DeduplicateInstanceTask>(m_contentStore.get(), instance);
+        m_shareTask = task;
+        connect(task.get(), &Task::failed, this,
                 [](const QString& reason) { qWarning() << "Shared store: sharing an instance failed:" << reason; });
-        // the next one starts once this one is done with its signals
-        connect(m_shareTask.get(), &Task::finished, this, [this] { QTimer::singleShot(0, this, &Application::shareNextInstance); });
+        connect(task.get(), &Task::finished, this, [this, task = task.get()] {
+            // what validations found, taken from the store by the task, is shown like any other
+            reportRestoredFiles(task->restoredFiles());
+            // the next one starts once this one is done with its signals
+            QTimer::singleShot(0, this, &Application::shareNextInstance);
+        });
         m_shareTask->start();
         return;
     }
 }
 
+void Application::reportRestoredFiles(const QList<ContentStore::RestoredFile>& restoredFiles)
+{
+    m_restoredFiles.append(restoredFiles);
+    // kept until there is a window to show them in
+    if (!m_restoredFiles.isEmpty() && m_mainWindow) {
+        m_mainWindow->showRestoredFiles(std::exchange(m_restoredFiles, {}));
+    }
+}
+
 void Application::validatePendingBackups()
 {
-    if (!m_contentStore || !m_contentStore->isWritable() || m_validation.isRunning()) {
+    if (!m_contentStore) {
         return;
     }
-    const auto& pending = m_contentStore->table().pendingBackups();
-    if (std::ranges::none_of(pending, [](const PendingBackup& backup) { return backup.awaitValidation || backup.restoring; })) {
+    // also what was found when the store opened, which may have left nothing pending
+    reportRestoredFiles(m_contentStore->takeRestoredFiles());
+    if (!m_contentStore->isWritable() || m_validation.isRunning() || !m_contentStore->hasPendingValidations()) {
         return;
     }
     // in the background, as it hashes the files
     m_validation.disconnect(this);
-    connect(&m_validation, &QFutureWatcher<void>::finished, this, [this] {
-        const auto restored = m_contentStore->takeRestoredFiles();
-        if (!restored.isEmpty() && m_mainWindow) {
-            m_mainWindow->showRestoredFiles(restored);
-        }
-    });
+    connect(&m_validation, &QFutureWatcher<void>::finished, this, [this] { reportRestoredFiles(m_contentStore->takeRestoredFiles()); });
     m_validation.setFuture(QtConcurrent::run([store = m_contentStore.get()] {
         if (auto left = store->validatePendingBackups(); !left) {
             qWarning() << "Shared store:" << left.error();
@@ -1822,6 +1832,8 @@ MainWindow* Application::showMainWindow(bool minimized)
         m_mainWindow = new MainWindow();
         m_mainWindow->restoreState(QByteArray::fromBase64(APPLICATION->settings()->get("MainWindowState").toString().toUtf8()));
         m_mainWindow->restoreGeometry(QByteArray::fromBase64(APPLICATION->settings()->get("MainWindowGeometry").toString().toUtf8()));
+        // what the store found while opening, and anything found before there was a window to show it in
+        QTimer::singleShot(0, this, &Application::validatePendingBackups);
 
         if (minimized) {
             m_mainWindow->showMinimized();

@@ -49,6 +49,7 @@
 #include <QUrl>
 
 #include "QObjectPtr.h"
+#include "contentstore/ContentStore.h"
 
 #include "minecraft/auth/MinecraftAccount.h"
 
@@ -72,7 +73,6 @@ class BaseDetachedToolFactory;
 class TranslationsModel;
 class ITheme;
 class ThemeManager;
-class ContentStore;
 class Task;
 class IconTheme;
 class BaseInstance;
@@ -237,6 +237,8 @@ class Application : public QApplication {
     void shareNextInstance();
     // validates the backups of shared files that were in use before, in the background
     void validatePendingBackups();
+    // shows the user's files that validations put back or saved aside, once there is a main window
+    void reportRestoredFiles(const QList<ContentStore::RestoredFile>& restoredFiles);
 
     static bool handleDataMigration(const QString& currentData, const QString& oldData, const QString& name, const QString& configFile);
     bool createSetupWizard();
@@ -280,6 +282,7 @@ class Application : public QApplication {
     shared_qobject_ptr<Task> m_shareTask;
     QStringList m_shareQueue;
     QFutureWatcher<void> m_validation;
+    QList<ContentStore::RestoredFile> m_restoredFiles;
 
     QMap<QString, std::shared_ptr<BaseProfilerFactory>> m_profilers;
 

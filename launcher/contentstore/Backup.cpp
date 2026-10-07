@@ -5,6 +5,8 @@
 #include <QFileInfo>
 #include <QThread>
 
+#include <algorithm>
+
 #include "FileSystemPrimitives.h"
 #include "contentstore/ObjectFiles.h"
 #include "contentstore/StoreFiles.h"
@@ -246,6 +248,25 @@ Result<int> ContentStore::validatePendingBackups()
         return std::unexpected(QString("The shared store can't be changed"));
     }
     return validateBackupsLocked();
+}
+
+bool ContentStore::hasPendingValidations() const
+{
+    QMutexLocker locker(&m_mutex);
+    return std::ranges::any_of(m_table.pendingBackups(),
+                               [](const PendingBackup& backup) { return backup.awaitValidation || backup.restoring; });
+}
+
+QSet<QString> ContentStore::storedHashes() const
+{
+    QMutexLocker locker(&m_mutex);
+    QSet<QString> hashes;
+    for (const auto& entry : m_table.entries()) {
+        if (entry.current) {
+            hashes.insert(entry.hash);
+        }
+    }
+    return hashes;
 }
 
 QList<ContentStore::RestoredFile> ContentStore::takeRestoredFiles()

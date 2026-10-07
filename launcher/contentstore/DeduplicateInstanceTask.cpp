@@ -46,13 +46,10 @@ void DeduplicateInstanceTask::executeTask()
         }
     }
 
-    connect(&m_watcher, &QFutureWatcher<SharedContent::ShareReport>::finished, this, [this] {
-        m_report = m_watcher.result();
-        // the backups of the replaced files are validated now that nothing else runs; those still in use are later
-        if (auto left = m_store->validatePendingBackups(); !left) {
-            qWarning() << "Shared store:" << left.error();
-        }
-        m_restoredFiles = m_store->takeRestoredFiles();
+    connect(&m_watcher, &QFutureWatcher<Outcome>::finished, this, [this] {
+        auto outcome = m_watcher.result();
+        m_report = std::move(outcome.report);
+        m_restoredFiles = std::move(outcome.restoredFiles);
         if (m_report->stopped) {
             emitAborted();
             return;
@@ -60,12 +57,20 @@ void DeduplicateInstanceTask::executeTask()
         emitSucceeded();
     });
     m_watcher.setFuture(QtConcurrent::run([this, id = m_instance->id(), gameRoot, excluded] {
-        return SharedContent::shareInstance(
+        Outcome outcome;
+        outcome.report = SharedContent::shareInstance(
             *m_store, id, gameRoot, m_options,
             [excluded](const QString& relativePath) { return excluded.contains(SharedContent::exclusionKey(relativePath)); },
             [this](int done, int total) {
                 QMetaObject::invokeMethod(this, [this, done, total] { setProgress(done, total); }, Qt::QueuedConnection);
                 return !m_aborted;
             });
+        // The backups of the replaced files are validated now that nothing else runs, here, as it hashes them. Those still
+        // in use are validated later.
+        if (auto left = m_store->validatePendingBackups(); !left) {
+            qWarning() << "Shared store:" << left.error();
+        }
+        outcome.restoredFiles = m_store->takeRestoredFiles();
+        return outcome;
     }));
 }

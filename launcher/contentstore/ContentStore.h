@@ -423,6 +423,11 @@ class ContentStore {
     Result<int> validatePendingBackups();
     // The user's files that validations found changed since the last call
     QList<RestoredFile> takeRestoredFiles();
+    // Whether any backup awaits a validation or a restore. Safe while other threads change the store, unlike table().
+    bool hasPendingValidations() const;
+    // The hashes of the stored files that have a current generation, as they are now. Safe while other threads change
+    // the store, unlike table().
+    QSet<QString> storedHashes() const;
 
     void setInterruptionForTesting(std::function<bool(PlacementStep)> interruption) { m_interruption = std::move(interruption); }
     // seconds since the epoch, for tests that need time to pass
