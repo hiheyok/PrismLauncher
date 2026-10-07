@@ -517,6 +517,20 @@ bool foldersOverlap(const QString& first, const QString& second)
     return within(a, b) || within(b, a);
 }
 
+QString storeFolderBeside(const QString& instancesDir)
+{
+    auto instances = QFileInfo(instancesDir).canonicalFilePath();
+    if (instances.isEmpty()) {
+        instances = QDir::cleanPath(QFileInfo(instancesDir).absoluteFilePath());
+    }
+    // the folder above may be on another drive, when the instances' folder is where a drive is mounted
+    const auto parent = QFileInfo(instances).path();
+    if (parent == instances || !FS::sameVolume(parent, instances)) {
+        return {};
+    }
+    return QDir(parent).filePath("shared-files");
+}
+
 QStringList linksInto(const QString& dir, const QStringList& gameRoots)
 {
     const auto prefix = QDir::cleanPath(QFileInfo(dir).absoluteFilePath()) + '/';

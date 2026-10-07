@@ -77,8 +77,10 @@ SharedStorePage::SharedStorePage(QWidget* parent) : QWidget(parent)
     statusLayout->addWidget(m_useInstanceDrive, 0, Qt::AlignLeft);
     connect(m_useInstanceDrive, &QPushButton::clicked, this, [this] {
         // next to the instances' folder, so it is on their drive; applied, and the files moved, with the other settings
-        const auto instances = QDir(APPLICATION->settings()->get("InstanceDir").toString()).absolutePath();
-        m_storeDir->setText(QDir::cleanPath(QDir(instances).absoluteFilePath("../shared-files")));
+        const auto folder = SharedContent::storeFolderBeside(APPLICATION->settings()->get("InstanceDir").toString());
+        if (!folder.isEmpty()) {
+            m_storeDir->setText(folder);
+        }
     });
     m_useAnyway = new QPushButton(tr("Use the store anyway…"), statusBox);
     statusLayout->addWidget(m_useAnyway, 0, Qt::AlignLeft);
@@ -302,7 +304,8 @@ void SharedStorePage::refreshStatus()
                                              .arg(instances)
                                        : QString());
     m_driveWarning->setVisible(otherDrive);
-    m_useInstanceDrive->setVisible(otherDrive);
+    // only where a folder next to the instances is on their drive; otherwise the user chooses one there
+    m_useInstanceDrive->setVisible(otherDrive && !SharedContent::storeFolderBeside(instances).isEmpty());
 
     if (!store) {
         m_status->setText(tr("Sharing is off."));
