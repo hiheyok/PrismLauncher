@@ -138,6 +138,8 @@ class Application : public QApplication {
     bool contentStoreBusy() const;
     // Uses this store from now on, such as after its folder changed; the one before is closed
     void replaceContentStore(std::unique_ptr<ContentStore> store);
+    // While the store's folder changes, nothing starts using the store in the background
+    void setContentStoreChanging(bool changing) { m_contentStoreChanging = changing; }
 
     ExternalUpdater* updater() { return m_updater.get(); }
 
@@ -291,6 +293,7 @@ class Application : public QApplication {
     QStringList m_shareQueue;
     // validates in the background, and gives back the user's files it put back or saved aside
     QFutureWatcher<QList<ContentStore::RestoredFile>> m_validation;
+    bool m_contentStoreChanging = false;
     QList<ContentStore::RestoredFile> m_restoredFiles;
 
     QMap<QString, std::shared_ptr<BaseProfilerFactory>> m_profilers;

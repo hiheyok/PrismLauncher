@@ -12,6 +12,7 @@
 #include <QLocale>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QVBoxLayout>
 
 #include "Application.h"
@@ -346,16 +347,26 @@ bool SharedStorePage::moveStore(const QString& setting)
     if (APPLICATION->contentStoreBusy()) {
         return warn(tr("Shared files are being checked or shared in the background. Change the folder once that finished."));
     }
+    const auto newDir = APPLICATION->contentStoreDir(setting);
+    if (SharedContent::foldersOverlap(current->storeDir(), newDir)) {
+        return warn(tr("The folder %1 is within the one in use (%2), or contains it. Choose a folder outside of it.")
+                        .arg(newDir, current->storeDir()));
+    }
+    // nothing else uses the store in the background until it was replaced, as the dialogs below let timers run
+    APPLICATION->setContentStoreChanging(true);
+    const auto resume = qScopeGuard([] { APPLICATION->setContentStoreChanging(false); });
     if (!current->isIdle()) {
         // files whose sharing isn't finished, such as replaced files still in use, may finish now
-        current->validatePendingBackups();
+        if (auto left = current->validatePendingBackups(); !left) {
+            qWarning() << "Shared store:" << left.error();
+        }
         if (!current->isIdle()) {
             return warn(tr("Some files are still being shared, as another program has them open. Close it, and change the folder then."));
         }
     }
     const auto oldDir = current->storeDir();
     const bool otherLaunchers = current->clients().size() > 1;
-    auto next = APPLICATION->openContentStore(APPLICATION->contentStoreDir(setting));
+    auto next = APPLICATION->openContentStore(newDir);
     if (!next->isWritable()) {
         return warn(tr("The folder %1 can't be used: %2").arg(next->storeDir(), next->statusMessage()));
     }
@@ -396,6 +407,9 @@ bool SharedStorePage::moveStore(const QString& setting)
     const auto stillLinked = SharedContent::linksInto(oldDir, gameRoots);
     if (otherLaunchers) {
         notes.append(tr("The old folder %1 is kept, as other launchers use it too.").arg(oldDir));
+    } else if (SharedContent::foldersOverlap(oldDir, newDir)) {
+        // checked before, but never removed with the folder in use
+        notes.append(tr("The old folder %1 is kept, as it contains the new one.").arg(oldDir));
     } else if (!stillLinked.isEmpty()) {
         notes.append(tr("The old folder %1 is kept, as %n file(s) still link into it.", "", stillLinked.size()).arg(oldDir));
     } else if (QDir(oldDir).exists()) {

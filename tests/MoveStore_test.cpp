@@ -124,6 +124,39 @@ class MoveStoreTest : public QObject {
         QVERIFY(m_from->table().ref(mod));
     }
 
+    // an update that replaces a file while it is copied isn't undone by the copy taken before
+    void test_aFileReplacedDuringTheMoveIsKept()
+    {
+        QVERIFY(writeFile(path("a/mods/mod.jar"), "a mod"));
+        QCOMPARE(share(*m_from, "a").shared, 1);
+        SharedContent::setBeforeMoveCopyForTesting([](const QString& file) {
+            if (FS::deleteLink(file)) {
+                writeFile(file, "the updated mod");
+            }
+        });
+        const auto report = SharedContent::moveShares(*m_from, *m_to);
+        SharedContent::setBeforeMoveCopyForTesting({});
+        QCOMPARE(report.moved, 0);
+        QCOMPARE(report.failed.size(), 1);
+        QCOMPARE(readFile(path("a/mods/mod.jar")), "the updated mod");
+        QVERIFY(m_to->refsSnapshot().isEmpty());
+    }
+
+    void test_foldersOverlap()
+    {
+        QVERIFY(SharedContent::foldersOverlap(path("store"), path("store")));
+        QVERIFY(SharedContent::foldersOverlap(path("store"), path("store/new-store")));
+        QVERIFY(SharedContent::foldersOverlap(path("store/new-store"), path("store")));
+        QVERIFY(SharedContent::foldersOverlap(path("store"), path("store/a/../new-store/")));
+        QVERIFY(!SharedContent::foldersOverlap(path("store"), path("store-2")));
+        QVERIFY(!SharedContent::foldersOverlap(path("store"), path("other/store")));
+        // through a link to the folder in use
+        QVERIFY(QDir().mkpath(path("store")));
+        if (FS::createSymbolicLink(path("store"), path("link"))) {
+            QVERIFY(SharedContent::foldersOverlap(path("store"), path("link/new-store")));
+        }
+    }
+
     void test_goneLinksAreReleased()
     {
         QVERIFY(writeFile(path("a/mods/mod.jar"), "a mod"));
