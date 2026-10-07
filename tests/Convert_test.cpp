@@ -185,6 +185,31 @@ class ConvertTest : public QObject {
         QVERIFY(m_store->table().freezes().isEmpty());
     }
 
+    void test_copiedInsteadOfLinked()
+    {
+        QVERIFY(writeFile(file("mods/mod.jar"), "the user's mod"));
+        const auto before = FS::fileId(file("mods/mod.jar"));
+        const auto permissions = QFile::permissions(file("mods/mod.jar"));
+        // the user's file can't be linked into the store, so the store copies it
+        FS::Testing::setFaultHook([](FS::Testing::Operation operation, const QString& link) {
+            return operation == FS::Testing::Operation::HardLink && QFileInfo(link).fileName().startsWith("object.ingest-");
+        });
+        const auto converted = m_store->convert(destination("mods/mod.jar"));
+        FS::Testing::setFaultHook(nullptr);
+        QVERIFY2(converted, converted ? "" : qPrintable(converted.error()));
+        if (g_replacesUserFiles) {
+            QCOMPARE(converted->outcome, Outcome::Shared);
+            QVERIFY(sameFile(file("mods/mod.jar"), m_store->objectPath(sha256Of("the user's mod"))));
+        } else {
+            // the copy would replace the user's file, which needs the backup protocol here
+            QCOMPARE(converted->outcome, Outcome::Skipped);
+            QCOMPARE(FS::fileId(file("mods/mod.jar")), before);
+            QCOMPARE(QFile::permissions(file("mods/mod.jar")), permissions);
+        }
+        QCOMPARE(readFile(file("mods/mod.jar")), "the user's mod");
+        QVERIFY(m_store->table().freezes().isEmpty());
+    }
+
     void test_otherHardLinksAreLeftAlone()
     {
         QVERIFY(writeFile(file("mods/mod.jar"), "shared with another program"));

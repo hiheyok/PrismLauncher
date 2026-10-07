@@ -214,7 +214,10 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
     }
     const auto hash = stored->hash;
 
-    if (!stored->reusedObject) {
+    // Whether the user's own file became the stored file. Not when an identical file was already stored, nor when linking
+    // it failed and the store copied it instead: then the user's file is replaced like any other.
+    const auto storedId = FS::fileId(objectPath(hash));
+    if (storedId && *storedId == before.fileId) {
         // the user's file became the stored file, read-only like every stored file: linking it records the link
         guard.dismiss();
         TRY_INTO(const auto identity, FS::identity(path))
@@ -233,7 +236,7 @@ Result<ContentStore::ConvertResult> ContentStore::convert(const Destination& des
         return ConvertResult{ ConvertOutcome::Shared, {}, hash };
     }
 
-    // an identical file was already stored: the user's file is replaced by a link to it
+    // another file is stored, an identical one or a copy: the user's file is replaced by a link to it
     guard.restore();
     if (!g_canReplaceUserFiles) {
         finish("skipped");
