@@ -123,6 +123,14 @@ QJsonObject transactionToJson(const Transaction& transaction)
     if (transaction.generation) {
         json["generation"] = *transaction.generation;
     }
+    if (!transaction.backupPath.isEmpty()) {
+        json["backupMethod"] = transaction.backupMethod;
+        json["backupPath"] = transaction.backupPath;
+        json["expectedDigest"] = transaction.expectedDigest;
+    }
+    if (transaction.aborting) {
+        json["aborting"] = true;
+    }
     return json;
 }
 
@@ -149,6 +157,10 @@ Result<Transaction> transactionFromJson(const QJsonObject& json)
     if (json.contains("generation")) {
         transaction.generation = json["generation"].toInt();
     }
+    transaction.backupMethod = json["backupMethod"].toString();
+    transaction.backupPath = json["backupPath"].toString();
+    transaction.expectedDigest = json["expectedDigest"].toString();
+    transaction.aborting = json["aborting"].toBool();
     return transaction;
 }
 
@@ -350,6 +362,25 @@ QJsonObject unfreeze(const QString& conversion, const QString& outcome)
     return { { "type", "unfreeze" }, { "conversion", conversion }, { "outcome", outcome } };
 }
 
+QJsonObject backup(qint64 transactionId, const QString& method, const QString& backupPath, const QString& expectedDigest)
+{
+    return { { "type", "backup" },
+             { "transaction", transactionId },
+             { "method", method },
+             { "backupPath", backupPath },
+             { "expectedDigest", expectedDigest } };
+}
+
+QJsonObject aborting(qint64 transactionId)
+{
+    return { { "type", "aborting" }, { "transaction", transactionId } };
+}
+
+QJsonObject backupReleased(qint64 transactionId)
+{
+    return { { "type", "backupReleased" }, { "transaction", transactionId } };
+}
+
 QJsonObject destroyAborted(const QString& hash)
 {
     return { { "type", "destroyAborted" }, { "hash", hash } };
@@ -405,6 +436,10 @@ Result<> RefTable::commitTransaction(qint64 transactionId)
         findGeneration(*entry, generation)->unusedSince.reset();
         // a single assignment, so replacing a ref with one to the same object never loses it
         m_refs[transaction.key] = { transaction.newHash, kind, generation, RefState::Live, std::nullopt };
+    }
+    if (!transaction.backupPath.isEmpty()) {
+        // the backup stays until it is removed and that is recorded
+        m_pendingBackups[transactionId] = { transaction.key, transaction.backupPath };
     }
     m_transactions.erase(it);
     return {};
@@ -550,6 +585,24 @@ Result<> RefTable::apply(const QJsonObject& record)
             return std::unexpected(QString("Unknown generation is unused"));
         }
         generation->unusedSince = record["time"].toInteger();
+        return {};
+    }
+    if (type == "backup" || type == "aborting") {
+        auto it = m_transactions.find(record["transaction"].toInteger());
+        if (it == m_transactions.end()) {
+            return std::unexpected(QString("Backup record for an unknown transaction"));
+        }
+        if (type == "aborting") {
+            it->aborting = true;
+        } else {
+            it->backupMethod = record["method"].toString();
+            it->backupPath = record["backupPath"].toString();
+            it->expectedDigest = record["expectedDigest"].toString();
+        }
+        return {};
+    }
+    if (type == "backupReleased") {
+        m_pendingBackups.remove(record["transaction"].toInteger());
         return {};
     }
     if (type == "freeze") {
@@ -737,6 +790,13 @@ QJsonObject RefTable::snapshot() const
                           { "destroying", destroying },  { "nextTransactionId", m_nextTransactionId },
                           { "latestTime", m_latestTime } };
     // only written when there are any, so a snapshot without them is one a version 1 launcher fully understands
+    if (!m_pendingBackups.isEmpty()) {
+        QJsonObject pending;
+        for (auto it = m_pendingBackups.begin(); it != m_pendingBackups.end(); ++it) {
+            pending[QString::number(it.key())] = QJsonObject{ { "key", keyToJson(it->key) }, { "backupPath", it->backupPath } };
+        }
+        snapshot["pendingBackups"] = pending;
+    }
     if (!m_freezes.isEmpty()) {
         QJsonObject freezes;
         for (auto it = m_freezes.begin(); it != m_freezes.end(); ++it) {
@@ -812,6 +872,11 @@ Result<RefTable> RefTable::fromSnapshot(const QJsonObject& snapshot)
     }
     table.m_nextTransactionId = snapshot["nextTransactionId"].toInteger(1);
     table.m_latestTime = snapshot["latestTime"].toInteger();
+    const auto pending = snapshot["pendingBackups"].toObject();
+    for (auto it = pending.begin(); it != pending.end(); ++it) {
+        const auto json = it->toObject();
+        table.m_pendingBackups[it.key().toLongLong()] = { keyFromJson(json["key"].toObject()), json["backupPath"].toString() };
+    }
     const auto freezes = snapshot["freezes"].toObject();
     for (auto it = freezes.begin(); it != freezes.end(); ++it) {
         const auto json = it->toObject();

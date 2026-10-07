@@ -183,7 +183,7 @@ ContentStore::State ContentStore::loadTable(State state)
     m_state = State::Writable;
     QList<QJsonObject> records{ RefRecord::client(m_clientId, m_dataDir, now()) };
     records.append(Recovery::finishTransactions(m_table));
-    if (auto committed = commitLocked(records); !committed) {
+    if (auto committed = commitLocked(records).and_then([this] { return finishBackupsLocked(); }); !committed) {
         return setState(State::Disabled, committed.error());
     }
     // only after the placements are finished, so links they committed protect their stored files

@@ -62,6 +62,10 @@ QList<QJsonObject> finishTransactions(const RefTable& table)
         if (root == table.owners().end()) {
             continue;
         }
+        if (!transaction.backupPath.isEmpty()) {
+            // replacements with a backup are finished by the store, which checks the backup
+            continue;
+        }
         const auto path = QDir(*root).filePath(transaction.key.relativePath);
         const auto state = inspect(path);
 
