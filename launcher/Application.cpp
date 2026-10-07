@@ -1345,21 +1345,24 @@ void Application::reportRestoredFiles(const QList<ContentStore::RestoredFile>& r
 
 void Application::validatePendingBackups()
 {
-    if (!m_contentStore) {
+    if (!m_contentStore || m_validation.isRunning()) {
         return;
     }
-    // also what was found when the store opened, which may have left nothing pending
-    reportRestoredFiles(m_contentStore->takeRestoredFiles());
-    if (!m_contentStore->isWritable() || m_validation.isRunning() || !m_contentStore->hasPendingValidations()) {
-        return;
-    }
-    // in the background, as it hashes the files
+    // All of it in the background: the store is locked while it validates or reconciles, which can take long, and the
+    // notices are only taken under that lock. What it found comes back through the result.
     m_validation.disconnect(this);
-    connect(&m_validation, &QFutureWatcher<void>::finished, this, [this] { reportRestoredFiles(m_contentStore->takeRestoredFiles()); });
+    connect(&m_validation, &QFutureWatcher<QList<ContentStore::RestoredFile>>::finished, this,
+            [this] { reportRestoredFiles(m_validation.result()); });
     m_validation.setFuture(QtConcurrent::run([store = m_contentStore.get()] {
-        if (auto left = store->validatePendingBackups(); !left) {
-            qWarning() << "Shared store:" << left.error();
+        // also what was found when the store opened, which may have left nothing pending
+        auto restored = store->takeRestoredFiles();
+        if (store->isWritable() && store->hasPendingValidations()) {
+            if (auto left = store->validatePendingBackups(); !left) {
+                qWarning() << "Shared store:" << left.error();
+            }
+            restored.append(store->takeRestoredFiles());
         }
+        return restored;
     }));
 }
 

@@ -281,7 +281,8 @@ class Application : public QApplication {
     shared_qobject_ptr<Task> m_contentStoreTask;
     shared_qobject_ptr<Task> m_shareTask;
     QStringList m_shareQueue;
-    QFutureWatcher<void> m_validation;
+    // validates in the background, and gives back the user's files it put back or saved aside
+    QFutureWatcher<QList<ContentStore::RestoredFile>> m_validation;
     QList<ContentStore::RestoredFile> m_restoredFiles;
 
     QMap<QString, std::shared_ptr<BaseProfilerFactory>> m_profilers;
