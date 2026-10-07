@@ -193,8 +193,9 @@ bool foldersOverlap(const QString& first, const QString& second);
 // A folder for the store next to the instances' folder, links resolved, on the same drive as the instances; empty when
 // there is none, such as when the instances' folder is the top of its drive
 QString storeFolderBeside(const QString& instancesDir);
-// Called by moveShares before it copies each file, such as to change it then
-void setBeforeMoveCopyForTesting(std::function<void(const QString& path)> hook);
+// The steps of moving each file, where a test may change it
+enum class MoveStep { BeforeCopy, Copied, Placed };
+void setMoveHookForTesting(std::function<void(MoveStep step, const QString& path)> hook);
 
 // Removes a resource file of an instance: a symbolic link is first turned into a local copy, so a trashed file never
 // points into the store, then remove runs, and only if it succeeded the link is forgotten

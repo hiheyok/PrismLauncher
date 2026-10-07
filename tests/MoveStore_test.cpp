@@ -129,17 +129,86 @@ class MoveStoreTest : public QObject {
     {
         QVERIFY(writeFile(path("a/mods/mod.jar"), "a mod"));
         QCOMPARE(share(*m_from, "a").shared, 1);
-        SharedContent::setBeforeMoveCopyForTesting([](const QString& file) {
-            if (FS::deleteLink(file)) {
+        SharedContent::setMoveHookForTesting([](SharedContent::MoveStep step, const QString& file) {
+            if (step == SharedContent::MoveStep::BeforeCopy && FS::deleteLink(file)) {
                 writeFile(file, "the updated mod");
             }
         });
         const auto report = SharedContent::moveShares(*m_from, *m_to);
-        SharedContent::setBeforeMoveCopyForTesting({});
+        SharedContent::setMoveHookForTesting({});
         QCOMPARE(report.moved, 0);
         QCOMPARE(report.failed.size(), 1);
         QCOMPARE(readFile(path("a/mods/mod.jar")), "the updated mod");
         QVERIFY(m_to->refsSnapshot().isEmpty());
+    }
+
+    // shares a.jar through a symbolic link to the old store, and returns the file it links to
+    QString shareSymbolically()
+    {
+        writeFile(path("probe/target"), "probe");
+        if (!FS::createSymbolicLink(QFileInfo(path("probe/target")).absoluteFilePath(), path("probe/link"))) {
+            return {};
+        }
+        m_from->setLinkMode(ContentStore::LinkMode::SymbolicLinks);
+        writeFile(path("a/mods/mod.jar"), "old bytes");
+        if (share(*m_from, "a").shared != 1 || !QFileInfo(path("a/mods/mod.jar")).isSymLink()) {
+            return {};
+        }
+        return QFileInfo(path("a/mods/mod.jar")).symLinkTarget();
+    }
+
+    // the file a symbolic link points at changes, in place, while it is moved: what it holds then is what is moved
+    void test_aChangedLinkTargetIsMovedAgain_data()
+    {
+        QTest::addColumn<SharedContent::MoveStep>("step");
+        QTest::newRow("while copied") << SharedContent::MoveStep::Copied;
+        QTest::newRow("while placed") << SharedContent::MoveStep::Placed;
+    }
+    void test_aChangedLinkTargetIsMovedAgain()
+    {
+        QFETCH(SharedContent::MoveStep, step);
+        const auto target = shareSymbolically();
+        if (target.isEmpty()) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        bool changed = false;
+        SharedContent::setMoveHookForTesting([&](SharedContent::MoveStep at, const QString&) {
+            if (at == step && !changed) {
+                changed = true;
+                makeWritable(target);
+                writeFile(target, "new bytes");
+            }
+        });
+        const auto report = SharedContent::moveShares(*m_from, *m_to);
+        SharedContent::setMoveHookForTesting({});
+        QVERIFY(changed);
+        QVERIFY2(report.failed.isEmpty(), qPrintable(report.failed.join('\n')));
+        QCOMPARE(report.moved, 1);
+        QCOMPARE(readFile(path("a/mods/mod.jar")), "new bytes");
+    }
+
+    // and if it keeps changing, the old store keeps it
+    void test_aLinkTargetThatKeepsChangingIsKept()
+    {
+        const auto target = shareSymbolically();
+        if (target.isEmpty()) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        int changes = 0;
+        SharedContent::setMoveHookForTesting([&](SharedContent::MoveStep at, const QString&) {
+            if (at == SharedContent::MoveStep::Placed) {
+                makeWritable(target);
+                writeFile(target, QByteArray("change ") + QByteArray::number(++changes));
+            }
+        });
+        const auto report = SharedContent::moveShares(*m_from, *m_to);
+        SharedContent::setMoveHookForTesting({});
+        QCOMPARE(report.moved, 0);
+        QCOMPARE(report.failed.size(), 1);
+        QVERIFY(report.failed.first().contains(target));
+        // not released, so the newest bytes are still there
+        QVERIFY(m_from->table().ref(key(*m_from, "a", "mods/mod.jar")));
+        QCOMPARE(readFile(target), QByteArray("change ") + QByteArray::number(changes));
     }
 
     void test_foldersOverlap()
