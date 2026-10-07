@@ -906,14 +906,29 @@ void MainWindow::on_actionShareAllContent_triggered()
     if (!m_selectedInstance) {
         return;
     }
-    auto* store = SharedContent::storeFor(m_selectedInstance);
-    if (!store) {
+    if (!SharedContent::linkedStoreFor(m_selectedInstance)) {
         return;
     }
     if (m_selectedInstance->isRunning()) {
         CustomMessageBox::selectable(this, tr("Share all content"), tr("Close the instance before sharing its content."),
                                      QMessageBox::Warning)
             ->show();
+        return;
+    }
+    if (!SharedContent::instanceShares(m_selectedInstance)) {
+        const auto answer = CustomMessageBox::selectable(this, tr("Share all content"),
+                                                         tr("Sharing is switched off for %1, so its files aren't shared. Turn it on, "
+                                                            "and share its content?")
+                                                             .arg(m_selectedInstance->name()),
+                                                         QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
+                                ->exec();
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+        SharedContent::setInstanceShares(m_selectedInstance, true);
+    }
+    auto* store = SharedContent::storeFor(m_selectedInstance);
+    if (!store) {
         return;
     }
 
@@ -936,8 +951,9 @@ void MainWindow::on_actionShareAllContent_triggered()
     }
     if (!FS::sameVolume(gameRoot, store->storeDir())) {
         notes.append(
-            tr("This instance is on another drive than the shared store. Its files can only be shared through symbolic "
-               "links, and files that can't be linked are left as they are."));
+            tr("This instance is on another drive than the shared files folder. Its files can only be shared through symbolic "
+               "links, and files that can't be linked are left as they are. To share them with hard links instead, move the "
+               "folder onto the instance's drive first, in Settings → Shared Files."));
     }
     auto* box = CustomMessageBox::selectable(this, tr("Share all content"), notes.join("\n\n"), QMessageBox::Question,
                                              QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
@@ -953,8 +969,29 @@ void MainWindow::on_actionShareAllContent_triggered()
     options.allowNetworkVolumes = network;
     auto task = makeShared<DeduplicateInstanceTask>(store, m_selectedInstance, options);
     runModalTask(task.get());
-    if (task->report()) {
-        showShareReport(*task->report(), task->restoredFiles());
+    if (!task->report()) {
+        return;
+    }
+    showShareReport(*task->report(), task->restoredFiles());
+
+    // the files kept local, which the user may have kept local only to stop sharing them
+    if (const auto keptLocal = task->report()->keptLocal; keptLocal > 0) {
+        const auto answer = CustomMessageBox::selectable(this, tr("Share all content"),
+                                                         tr("%n file(s) of %1 are kept local, so they were left as they are. Share "
+                                                            "them too? They are then no longer kept local.",
+                                                            "", keptLocal)
+                                                             .arg(m_selectedInstance->name()),
+                                                         QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                                ->exec();
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+        SharedContent::clearExclusions(m_selectedInstance);
+        auto again = makeShared<DeduplicateInstanceTask>(store, m_selectedInstance, options);
+        runModalTask(again.get());
+        if (again->report()) {
+            showShareReport(*again->report(), again->restoredFiles());
+        }
     }
 }
 
@@ -1056,12 +1093,18 @@ void MainWindow::showShareReport(const SharedContent::ShareReport& report, const
     }
     int hardLinked = 0;
     int inUse = 0;
+    int network = 0;
     for (const auto& skipped : report.skipped) {
         if (skipped.reason == ContentStore::ConvertSkip::HardLinked) {
             hardLinked++;
         } else if (skipped.reason == ContentStore::ConvertSkip::InUse) {
             inUse++;
+        } else if (skipped.reason == ContentStore::ConvertSkip::NetworkVolume) {
+            network++;
         }
+    }
+    if (network > 0) {
+        lines.append(tr("%n file(s) were left as they are because they are on a network drive.", "", network));
     }
     if (hardLinked > 0) {
         lines.append(tr("%n file(s) were left as they are because they are hard-linked elsewhere.", "", hardLinked));
@@ -1989,7 +2032,14 @@ void MainWindow::setInstanceActionsEnabled(bool enabled)
     ui->actionExportInstance->setEnabled(enabled);
     ui->actionDeleteInstance->setEnabled(enabled);
     ui->actionCopyInstance->setEnabled(enabled);
-    ui->actionShareAllContent->setEnabled(enabled && SharedContent::storeFor(m_selectedInstance) != nullptr);
+    // also while the instance doesn't share its files: the action then explains that, and offers to turn it on
+    const bool storeUsable = SharedContent::linkedStoreFor(m_selectedInstance) != nullptr;
+    ui->actionShareAllContent->setEnabled(enabled && storeUsable);
+    ui->actionShareAllContent->setToolTip(storeUsable
+                                              ? tr("Share the mods, resource packs and shader packs of the selected instance with other "
+                                                   "instances, so each is stored only once.")
+                                              : tr("Sharing is off, or the shared files folder can't be used right now. See "
+                                                   "Settings → Shared Files."));
     // existing links can always be made local, also while the instance doesn't share new files
     ui->actionStopSharingAllContent->setEnabled(enabled && SharedContent::linkedStoreFor(m_selectedInstance) != nullptr);
     ui->actionClearKeptLocal->setEnabled(enabled);

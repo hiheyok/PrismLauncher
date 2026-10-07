@@ -310,6 +310,7 @@ ShareReport shareInstance(ContentStore& store,
         const auto& path = files[done];
         const auto target = destination(store, instanceId, gameRoot, path);
         if (excluded && excluded(target.relativePath)) {
+            report.keptLocal++;
             continue;
         }
         const auto size = QFileInfo(path).size();

@@ -43,6 +43,8 @@ class SharedStorePage : public QWidget, public BasePage {
     QCheckBox* m_shareExisting = nullptr;
     QLabel* m_status = nullptr;
     QLabel* m_volumeWarning = nullptr;
+    QLabel* m_driveWarning = nullptr;
+    QPushButton* m_useInstanceDrive = nullptr;
     QPushButton* m_verify = nullptr;
     QPushButton* m_reconcile = nullptr;
     QPushButton* m_deepVerify = nullptr;

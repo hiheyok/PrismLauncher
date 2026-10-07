@@ -116,6 +116,8 @@ int shareFreshFiles(ContentStore& store,
 struct ShareReport {
     int shared = 0;
     int alreadyShared = 0;
+    // left as they are, as the user keeps them local
+    int keptLocal = 0;
     // the size of the files that became links to a file another instance, or another of these files, already stored
     qint64 bytesSaved = 0;
     struct Skipped {

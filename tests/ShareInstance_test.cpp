@@ -117,6 +117,8 @@ class ShareInstanceTest : public QObject {
         const auto before = FS::fileId(path("a/mods/kept.jar"));
         const auto report = share("a", {}, [](const QString& relativePath) { return relativePath == "mods/kept.jar"; });
         QCOMPARE(report.shared, 1);
+        // and the report says so
+        QCOMPARE(report.keptLocal, 1);
         QCOMPARE(FS::fileId(path("a/mods/kept.jar")), before);
         QVERIFY(!m_store->table().ref({ m_store->instanceOwner("a"), "mods/kept.jar" }));
         QVERIFY(QFileInfo(path("a/mods/kept.jar")).isWritable());
