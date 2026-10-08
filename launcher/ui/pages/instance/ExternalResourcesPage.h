@@ -67,6 +67,7 @@ class ExternalResourcesPage : public QMainWindow, public BasePage {
     void unlockUpdates();
     void updateSharingActions();
     void keepLocal();
+    void stopSharing();
     // runs the task of a sharing action, then shows what went wrong
     void runSharingAction(const shared_qobject_ptr<SharingActionTask>& task, const QString& errorTitle);
     void share();

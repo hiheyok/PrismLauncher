@@ -202,6 +202,8 @@ class ResourceFolderModel : public QAbstractListModel {
     SharedContent::FileState sharedState(int row) const;
     // "Keep local copy" applies to shared, damaged and local files that aren't kept local yet
     bool canKeepLocal(const QModelIndex& index) const;
+    // a shared file, which can be made local without keeping it local
+    bool canStopSharing(const QModelIndex& index) const;
     // a local file, also one kept local, while the instance shares its files
     bool canShare(const QModelIndex& index) const;
     // "Revert to shared version" applies to files kept local whose shared version is still stored
@@ -212,6 +214,8 @@ class ResourceFolderModel : public QAbstractListModel {
     // The sharing actions return a task that does the file work in the background; it isn't started. Once it finished,
     // the rows show the files as they are, and its errors() tell what went wrong, per file.
     shared_qobject_ptr<SharingActionTask> keepLocal(const QModelIndexList& indexes);
+    // "Stop sharing": makes the shared files local copies, without keeping them local
+    shared_qobject_ptr<SharingActionTask> stopSharing(const QModelIndexList& indexes);
     // "Share": shares the local files, which aren't kept local anymore
     shared_qobject_ptr<SharingActionTask> share(const QModelIndexList& indexes);
     // identities are the files the user confirmed discarding, by path, from fileIdentities

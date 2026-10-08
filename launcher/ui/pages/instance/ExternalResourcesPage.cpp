@@ -129,6 +129,7 @@ ExternalResourcesPage::ExternalResourcesPage(MinecraftInstance* instance, Resour
     connect(m_ui->actionLockUpdates, &QAction::triggered, this, &ExternalResourcesPage::lockUpdates);
     connect(m_ui->actionUnlockUpdates, &QAction::triggered, this, &ExternalResourcesPage::unlockUpdates);
     connect(m_ui->actionKeepLocal, &QAction::triggered, this, &ExternalResourcesPage::keepLocal);
+    connect(m_ui->actionStopSharing, &QAction::triggered, this, &ExternalResourcesPage::stopSharing);
     connect(m_ui->actionShare, &QAction::triggered, this, &ExternalResourcesPage::share);
     connect(m_ui->actionRevertToShared, &QAction::triggered, this, &ExternalResourcesPage::revertToShared);
     connect(m_ui->actionRestoreOriginal, &QAction::triggered, this, &ExternalResourcesPage::restoreOriginal);
@@ -413,6 +414,7 @@ void ExternalResourcesPage::updateActions()
         return std::ranges::any_of(selection, [&](const QModelIndex& index) { return index.column() == 0 && (m_model->*can)(index); });
     };
     m_ui->actionKeepLocal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canKeepLocal));
+    m_ui->actionStopSharing->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canStopSharing));
     m_ui->actionShare->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canShare));
     m_ui->actionRevertToShared->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRevertToShared));
     m_ui->actionRestoreOriginal->setEnabled(hasSelection && anySelected(&ResourceFolderModel::canRestoreOriginal));
@@ -466,6 +468,7 @@ void ExternalResourcesPage::updateSharingActions()
     // existing links can always be kept local or repaired; reverting makes a new link, only while the instance shares files
     const bool linked = SharedContent::linkedStoreFor(m_instance) != nullptr;
     m_ui->actionKeepLocal->setVisible(linked);
+    m_ui->actionStopSharing->setVisible(linked);
     m_ui->actionRestoreOriginal->setVisible(linked);
     m_ui->actionRevertToShared->setVisible(SharedContent::storeFor(m_instance) != nullptr);
     m_ui->actionShare->setVisible(SharedContent::storeFor(m_instance) != nullptr);
@@ -492,6 +495,12 @@ void ExternalResourcesPage::keepLocal()
     const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
     runSharingAction(m_model->keepLocal(selection), tr("Could not keep local copies"));
     updateActions();
+}
+
+void ExternalResourcesPage::stopSharing()
+{
+    const auto selection = m_filterModel->mapSelectionToSource(m_ui->treeView->selectionModel()->selection()).indexes();
+    runSharingAction(m_model->stopSharing(selection), tr("Could not stop sharing"));
 }
 
 void ExternalResourcesPage::share()

@@ -123,6 +123,8 @@
    <addaction name="actionExportInstance"/>
    <addaction name="actionCopyInstance"/>
    <addaction name="actionShareAllContent"/>
+   <addaction name="actionStopSharingAllContent"/>
+   <addaction name="actionClearKeptLocal"/>
    <addaction name="actionDeleteInstance"/>
    <addaction name="actionCreateInstanceShortcut"/>
   </widget>
@@ -153,6 +155,8 @@
     <addaction name="actionExportInstance"/>
     <addaction name="actionCopyInstance"/>
     <addaction name="actionShareAllContent"/>
+    <addaction name="actionStopSharingAllContent"/>
+    <addaction name="actionClearKeptLocal"/>
     <addaction name="actionDeleteInstance"/>
     <addaction name="actionCreateInstanceShortcut"/>
     <addaction name="separator"/>
@@ -459,6 +463,22 @@
    </property>
    <property name="toolTip">
     <string>Share the mods, resource packs and shader packs of the selected instance with other instances, so each is stored only once.</string>
+   </property>
+  </action>
+  <action name="actionStopSharingAllContent">
+   <property name="text">
+    <string>Stop Sharing All Content...</string>
+   </property>
+   <property name="toolTip">
+    <string>Make every shared file of the selected instance a local copy again, without keeping it local</string>
+   </property>
+  </action>
+  <action name="actionClearKeptLocal">
+   <property name="text">
+    <string>Clear Kept-Local Marks...</string>
+   </property>
+   <property name="toolTip">
+    <string>Let sharing include the files of the selected instance that are kept local</string>
    </property>
   </action>
   <action name="actionExportInstance">

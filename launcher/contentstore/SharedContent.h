@@ -74,6 +74,11 @@ void renameExclusion(BaseInstance* instance, const QString& from, const QString&
 void setExcluded(BaseInstance* instance, const QString& relativePath, bool excluded, const QString& unsharedFrom = {});
 // The stored file a file kept local was copied from
 QString unsharedFrom(BaseInstance* instance, const QString& relativePath);
+// How many files of an instance are kept local
+int excludedCount(BaseInstance* instance);
+// "Clear kept-local marks": no file of the instance is kept local anymore, so sharing includes them again. The files stay
+// as they are until they are shared.
+void clearExclusions(BaseInstance* instance);
 
 // "Keep local copy": turns a shared file into a writable local copy of the bytes it shows, and keeps it local from now on,
 // also through updates. A file that already is local is just kept local.
@@ -157,6 +162,25 @@ struct MoveReport {
 // aren't linked, so they are left as they are. progress is told how many links are done, and stops the move by returning false. A file that
 // fails keeps working through from, which then still records it.
 MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress = {});
+
+// What stopping to share did
+struct StopReport {
+    int unshared = 0;
+    // the files that couldn't be made local, with why; each stays shared
+    QStringList failed;
+    bool stopped = false;
+};
+
+// "Stop sharing": makes every shared file of this launcher's owners that includes accepts a local file again, without
+// keeping it local, so sharing can include it again later. progress is told how many links are done, and stops by
+// returning false.
+StopReport stopSharing(ContentStore& store,
+                       const std::function<bool(const QString& owner)>& includes,
+                       const std::function<bool(int done, int total)>& progress = {});
+// What making those files local takes on disk: the size of each linked file, once per link
+qint64 linkedSize(ContentStore& store, const std::function<bool(const QString& owner)>& includes);
+// How many links of this launcher's owners includes accepts
+int linkCount(ContentStore& store, const std::function<bool(const QString& owner)>& includes);
 
 // The files in the content folders of these game folders that are symbolic links into dir, such as into a store that is
 // about to be deleted

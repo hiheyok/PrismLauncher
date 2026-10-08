@@ -182,6 +182,47 @@ class ShareInstanceTest : public QObject {
         QCOMPARE(task.errors(), QStringList{ "could not" });
     }
 
+    void test_stopSharingAnInstance()
+    {
+        for (const auto* instance : { "a", "b" }) {
+            QVERIFY(writeFile(path(QString("%1/mods/common.jar").arg(instance)), "common mod"));
+        }
+        QVERIFY(writeFile(path("a/resourcepacks/pack.zip"), "a resource pack"));
+        QCOMPARE(share("a").shared, 2);
+        QCOMPARE(share("b").shared, 1);
+        const auto ownerA = m_store->instanceOwner("a");
+        const auto onlyA = [ownerA](const QString& owner) { return owner == ownerA; };
+        QCOMPARE(SharedContent::linkCount(*m_store, onlyA), 2);
+        QCOMPARE(SharedContent::linkedSize(*m_store, onlyA),
+                 qint64(QByteArray("common mod").size() + QByteArray("a resource pack").size()));
+
+        const auto report = SharedContent::stopSharing(*m_store, onlyA);
+        QCOMPARE(report.unshared, 2);
+        QVERIFY(report.failed.isEmpty());
+        // a's files are writable local copies, b's file is still shared
+        QVERIFY(!m_store->table().ref({ ownerA, "mods/common.jar" }));
+        QVERIFY(!sameFile(path("a/mods/common.jar"), path("b/mods/common.jar")));
+        QVERIFY(QFileInfo(path("a/mods/common.jar")).isWritable());
+        QCOMPARE(readFile(path("a/mods/common.jar")), "common mod");
+        QVERIFY(m_store->table().ref({ m_store->instanceOwner("b"), "mods/common.jar" }));
+        QCOMPARE(SharedContent::linkCount(*m_store, onlyA), 0);
+    }
+
+    void test_stopSharingEverything()
+    {
+        for (const auto* instance : { "a", "b" }) {
+            QVERIFY(writeFile(path(QString("%1/mods/common.jar").arg(instance)), "common mod"));
+            QVERIFY(share(instance).shared == 1);
+        }
+        const auto report = SharedContent::stopSharing(*m_store, {});
+        QCOMPARE(report.unshared, 2);
+        QVERIFY(m_store->refsSnapshot().isEmpty());
+        // nothing uses the stored file anymore, and as it was only hard-linked, it is gone already
+        QCOMPARE(m_store->stats().files, 0);
+        QCOMPARE(readFile(path("a/mods/common.jar")), "common mod");
+        QCOMPARE(readFile(path("b/mods/common.jar")), "common mod");
+    }
+
     void test_shareFileSharesOne()
     {
         QVERIFY(writeFile(path("a/mods/mod.jar"), "a mod"));

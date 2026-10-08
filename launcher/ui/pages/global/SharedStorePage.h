@@ -48,5 +48,6 @@ class SharedStorePage : public QWidget, public BasePage {
     QPushButton* m_deepVerify = nullptr;
     QPushButton* m_repair = nullptr;
     QPushButton* m_cleanUp = nullptr;
+    QPushButton* m_stopAll = nullptr;
     QPushButton* m_useAnyway = nullptr;
 };

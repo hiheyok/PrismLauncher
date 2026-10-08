@@ -135,6 +135,7 @@
 #include "StringUtils.h"
 #include "contentstore/DeduplicateInstanceTask.h"
 #include "contentstore/SharedContent.h"
+#include "contentstore/StoreTasks.h"
 #include "contentstore/WriterGuard.h"
 
 #include "Json.h"
@@ -954,6 +955,80 @@ void MainWindow::on_actionShareAllContent_triggered()
     runModalTask(task.get());
     if (task->report()) {
         showShareReport(*task->report(), task->restoredFiles());
+    }
+}
+
+void MainWindow::on_actionStopSharingAllContent_triggered()
+{
+    if (!m_selectedInstance) {
+        return;
+    }
+    auto* store = SharedContent::linkedStoreFor(m_selectedInstance);
+    if (!store) {
+        return;
+    }
+    if (m_selectedInstance->isRunning()) {
+        CustomMessageBox::selectable(this, tr("Stop sharing all content"), tr("Close the instance before it stops sharing its content."),
+                                     QMessageBox::Warning)
+            ->show();
+        return;
+    }
+    const auto owner = store->instanceOwner(m_selectedInstance->id());
+    const auto includes = [owner](const QString& candidate) { return candidate == owner; };
+    const auto links = SharedContent::linkCount(*store, includes);
+    if (links == 0) {
+        CustomMessageBox::selectable(this, tr("Stop sharing all content"), tr("No file of %1 is shared.").arg(m_selectedInstance->name()),
+                                     QMessageBox::Information)
+            ->show();
+        return;
+    }
+    const auto answer =
+        CustomMessageBox::selectable(
+            this, tr("Stop sharing all content"),
+            tr("%n shared file(s) of %1 become local copies again, taking %2. They aren't kept local, so "
+               "\"Share All Content\" can share them again later.\n\nContinue?",
+               "", links)
+                .arg(m_selectedInstance->name(), StringUtils::humanReadableFileSize(SharedContent::linkedSize(*store, includes))),
+            QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
+            ->exec();
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+    auto task = makeShared<StopSharingTask>(store, includes);
+    runModalTask(task.get());
+    if (const auto& report = task->report(); report) {
+        QStringList lines{ tr("%n file(s) are local copies now.", "", report->unshared) };
+        if (!report->failed.isEmpty()) {
+            lines.append(tr("These files are still shared:\n%1").arg(report->failed.join('\n')));
+        }
+        CustomMessageBox::selectable(this, tr("Stop sharing all content"), lines.join("\n\n"),
+                                     report->failed.isEmpty() ? QMessageBox::Information : QMessageBox::Warning)
+            ->show();
+    }
+}
+
+void MainWindow::on_actionClearKeptLocal_triggered()
+{
+    if (!m_selectedInstance) {
+        return;
+    }
+    const auto count = SharedContent::excludedCount(m_selectedInstance);
+    if (count == 0) {
+        CustomMessageBox::selectable(this, tr("Clear kept-local marks"), tr("No file of %1 is kept local.").arg(m_selectedInstance->name()),
+                                     QMessageBox::Information)
+            ->show();
+        return;
+    }
+    const auto answer = CustomMessageBox::selectable(
+                            this, tr("Clear kept-local marks"),
+                            tr("%n file(s) of %1 are kept local. Clearing the marks lets sharing include them again: \"Share "
+                               "All Content\" shares them, and updates are shared. The files stay as they are until then.\n\nContinue?",
+                               "", count)
+                                .arg(m_selectedInstance->name()),
+                            QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
+                            ->exec();
+    if (answer == QMessageBox::Yes) {
+        SharedContent::clearExclusions(m_selectedInstance);
     }
 }
 
@@ -1915,6 +1990,9 @@ void MainWindow::setInstanceActionsEnabled(bool enabled)
     ui->actionDeleteInstance->setEnabled(enabled);
     ui->actionCopyInstance->setEnabled(enabled);
     ui->actionShareAllContent->setEnabled(enabled && SharedContent::storeFor(m_selectedInstance) != nullptr);
+    // existing links can always be made local, also while the instance doesn't share new files
+    ui->actionStopSharingAllContent->setEnabled(enabled && SharedContent::linkedStoreFor(m_selectedInstance) != nullptr);
+    ui->actionClearKeptLocal->setEnabled(enabled);
     ui->actionCreateInstanceShortcut->setEnabled(enabled);
 }
 

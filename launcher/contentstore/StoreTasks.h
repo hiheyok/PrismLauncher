@@ -73,6 +73,41 @@ class MoveStoreTask : public Task {
     QFutureWatcher<SharedContent::MoveReport> m_watcher;
 };
 
+// Makes shared files local again in the background, see SharedContent::stopSharing
+class StopSharingTask : public Task {
+    Q_OBJECT
+   public:
+    StopSharingTask(ContentStore* store, std::function<bool(const QString& owner)> includes)
+        : m_store(store), m_includes(std::move(includes))
+    {}
+    ~StopSharingTask() override
+    {
+        m_aborted = true;
+        m_watcher.waitForFinished();
+    }
+
+    const std::optional<SharedContent::StopReport>& report() const { return m_report; }
+    bool canAbort() const override { return true; }
+
+   public slots:
+    bool abort() override
+    {
+        // the file being made local is finished first; the others stay shared
+        m_aborted = true;
+        return true;
+    }
+
+   protected:
+    void executeTask() override;
+
+   private:
+    ContentStore* m_store;
+    std::function<bool(const QString& owner)> m_includes;
+    std::optional<SharedContent::StopReport> m_report;
+    std::atomic<bool> m_aborted = false;
+    QFutureWatcher<SharedContent::StopReport> m_watcher;
+};
+
 // Scans the folders of this launcher's owners in the background, see ContentStore::reconcile
 class ReconcileStoreTask : public Task {
     Q_OBJECT
