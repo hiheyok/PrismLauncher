@@ -217,6 +217,35 @@ class MoveStoreTest : public QObject {
         QCOMPARE(SharedContent::linksInto(m_from->storeDir(), { path("a") }).size(), 1);
     }
 
+    // and a file an update put there between two attempts isn't replaced by the link put back
+    void test_aFileReplacedBetweenAttemptsIsKept()
+    {
+        const auto target = shareSymbolically();
+        if (target.isEmpty()) {
+            QSKIP("This system doesn't allow creating symbolic links");
+        }
+        int copies = 0;
+        SharedContent::setMoveHookForTesting([&](SharedContent::MoveStep at, const QString& file) {
+            if (at == SharedContent::MoveStep::Placed) {
+                makeWritable(target);
+                writeFile(target, "changed again");
+            } else if (at == SharedContent::MoveStep::BeforeCopy && ++copies == 2 && FS::deleteLink(file)) {
+                writeFile(file, "the updated mod");
+            }
+        });
+        const auto report = SharedContent::moveShares(*m_from, *m_to);
+        SharedContent::setMoveHookForTesting({});
+        QCOMPARE(copies, 2);
+        QCOMPARE(report.moved, 0);
+        QCOMPARE(report.failed.size(), 1);
+        QVERIFY(!QFileInfo(path("a/mods/mod.jar")).isSymLink());
+        QCOMPARE(readFile(path("a/mods/mod.jar")), "the updated mod");
+        // what the old store holds is kept too
+        QVERIFY(m_from->table().ref(key(*m_from, "a", "mods/mod.jar")));
+        QCOMPARE(readFile(target), "changed again");
+        QVERIFY(m_to->refsSnapshot().isEmpty());
+    }
+
     void test_foldersOverlap()
     {
         QVERIFY(SharedContent::foldersOverlap(path("store"), path("store")));
