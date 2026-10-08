@@ -354,6 +354,8 @@ bool SharedStorePage::moveStore(const QString& setting)
             notes.append(tr("These files couldn't be moved, and still link to the old folder:\n%1").arg(report->failed.join('\n')));
         }
     }
+    // what didn't move is still recorded there, and its file may hold the only copy of what the instance should see
+    const bool oldStoreUsed = !current->refsSnapshot().isEmpty();
     APPLICATION->replaceContentStore(std::move(next));
 
     // the old folder, unless something still needs it
@@ -364,6 +366,8 @@ bool SharedStorePage::moveStore(const QString& setting)
     const auto stillLinked = SharedContent::linksInto(oldDir, gameRoots);
     if (otherLaunchers) {
         notes.append(tr("The old folder %1 is kept, as other launchers use it too.").arg(oldDir));
+    } else if (oldStoreUsed) {
+        notes.append(tr("The old folder %1 is kept, as some files didn't move and are still shared from it.").arg(oldDir));
     } else if (SharedContent::foldersOverlap(oldDir, newDir)) {
         // checked before, but never removed with the folder in use
         notes.append(tr("The old folder %1 is kept, as it contains the new one.").arg(oldDir));
