@@ -8,8 +8,10 @@ runs:
     - name: Install host dependencies
       shell: bash
       run: |
-        sudo apt-get -y update
-        sudo apt-get -y install \
+        # retry slow or failing mirrors instead of waiting on them
+        apt_options=(-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        sudo apt-get -y "${apt_options[@]}" update
+        sudo apt-get -y "${apt_options[@]}" install \
           dpkg-dev \
           ninja-build extra-cmake-modules pkg-config scdoc \
           gamemode-dev libxcb-cursor-dev
@@ -34,18 +36,28 @@ runs:
             ;;
         esac
 
-        gh release download \
+        # each download retried a few times, and given up on if it stalls
+        download() {
+          for attempt in 1 2 3; do
+            timeout 5m gh release download "$@" --clobber && return 0
+            echo "Download failed (attempt $attempt): $*"
+            sleep 10
+          done
+          return 1
+        }
+
+        download \
           --repo VHSgunzo/sharun \
           --pattern "sharun-$APPIMAGE_ARCH-aio" \
           --output ~/bin/sharun
 
         # FIXME!: revert this to probonopd/go-appimage once https://github.com/probonopd/go-appimage/pull/377 is merged!
-        gh release download continuous \
+        download continuous \
           --repo DioEgizio/go-appimage \
           --pattern "mkappimage-*-$APPIMAGE_ARCH.AppImage" \
           --output ~/bin/mkappimage
 
-        gh release download \
+        download \
           --repo AppImageCommunity/AppImageUpdate \
           --pattern "AppImageUpdate-$APPIMAGE_ARCH.AppImage" \
           --output ~/bin/AppImageUpdate.AppImage
