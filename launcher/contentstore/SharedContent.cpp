@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -423,6 +424,26 @@ void setMoveHookForTesting(std::function<void(MoveStep step, const QString& path
     s_moveHook = std::move(hook);
 }
 
+namespace {
+// Puts the symbolic link to target back at path, in place of what a move put there; or, where no symbolic link can be
+// created, a copy of what target holds now
+Result<> restoreLink(const QString& path, const QString& target)
+{
+    TRY_INTO(const auto temporary, FS::reserveTemporarySibling(path, "prism-link"))
+    TRY(FS::deleteLink(temporary))
+    if (!FS::createSymbolicLink(target, temporary)) {
+        if (!QFile::copy(target, temporary)) {
+            return std::unexpected(QString("Could not link or copy %1 back to %2").arg(target, path));
+        }
+    }
+    if (auto replaced = FS::replaceFile(temporary, path); !replaced) {
+        (void)FS::deleteLink(temporary);
+        return replaced;
+    }
+    return FS::flushDir(QFileInfo(path).absolutePath());
+}
+}  // namespace
+
 MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress)
 {
     MoveReport report;
@@ -461,6 +482,7 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
         options.allowCopy = true;
         QString error;
         bool placedCurrent = false;
+        bool placedOnce = false;
         // A file put at the path meanwhile, such as by an update, differs from the identity taken before the copy, and
         // isn't replaced. A symbolic link stays the same while its target changes, so that is hashed again once replaced:
         // what changed is still there, and is copied again. If it keeps changing, the old store's file isn't released.
@@ -484,6 +506,7 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
                 error = placed.error();
                 break;
             }
+            placedOnce = true;
             moveStep(MoveStep::Placed, path);
             if (!symbolic) {
                 placedCurrent = true;
@@ -500,6 +523,15 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
             }
         }
         if (!placedCurrent) {
+            // The path then holds a copy older than what the link's target holds: the link is put back, so the instance
+            // sees the newest bytes, and the new store forgets the path. The old store keeps it, so its folder is kept.
+            if (symbolic && placedOnce) {
+                if (auto restored = restoreLink(path, source); !restored) {
+                    error += QString("; the newest version is kept in %1, as %2").arg(source, restored.error());
+                } else if (auto forgotten = to.releaseMoved(key); !forgotten) {
+                    error += "; " + forgotten.error();
+                }
+            }
             report.failed.append(QString("%1: %2").arg(path, error));
             continue;
         }

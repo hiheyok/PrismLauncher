@@ -208,7 +208,13 @@ class MoveStoreTest : public QObject {
         QVERIFY(report.failed.first().contains(target));
         // not released, so the newest bytes are still there
         QVERIFY(m_from->table().ref(key(*m_from, "a", "mods/mod.jar")));
-        QCOMPARE(readFile(target), QByteArray("change ") + QByteArray::number(changes));
+        const auto newest = QByteArray("change ") + QByteArray::number(changes);
+        QCOMPARE(readFile(target), newest);
+        // and linked again, not left with an older copy from the new store, which forgot it
+        QVERIFY(QFileInfo(path("a/mods/mod.jar")).isSymLink());
+        QCOMPARE(readFile(path("a/mods/mod.jar")), newest);
+        QVERIFY(m_to->refsSnapshot().isEmpty());
+        QCOMPARE(SharedContent::linksInto(m_from->storeDir(), { path("a") }).size(), 1);
     }
 
     void test_foldersOverlap()
