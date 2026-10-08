@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -13,6 +14,7 @@
 #include "FileSystem.h"
 #include "FileSystemPrimitives.h"
 #include "InstanceList.h"
+#include "contentstore/ObjectFiles.h"
 #include "settings/SettingsObject.h"
 
 namespace SharedContent {
@@ -334,6 +336,210 @@ Result<ContentStore::ConvertResult> shareFile(ContentStore& store,
         setExcluded(instance, destination.relativePath, false);
     }
     return converted;
+}
+
+namespace {
+std::function<void(MoveStep, const QString&)> s_moveHook;
+
+void moveStep(MoveStep step, const QString& path)
+{
+    if (s_moveHook) {
+        s_moveHook(step, path);
+    }
+}
+}  // namespace
+
+void setMoveHookForTesting(std::function<void(MoveStep step, const QString& path)> hook)
+{
+    s_moveHook = std::move(hook);
+}
+
+namespace {
+// Puts the symbolic link to target back at path, in place of the file a move put there, which must still be there; or,
+// where no symbolic link can be created, a copy of what target holds now
+Result<> restoreLink(const QString& path, const QString& target, const FS::FileIdentity& placed)
+{
+    TRY_INTO(const auto temporary, FS::reserveTemporarySibling(path, "prism-link"))
+    TRY(FS::deleteLink(temporary))
+    if (!FS::createSymbolicLink(target, temporary)) {
+        if (!QFile::copy(target, temporary)) {
+            return std::unexpected(QString("Could not link or copy %1 back to %2").arg(target, path));
+        }
+    }
+    // checked last, right before it is replaced: a file put there since, such as by an update, is left as it is
+    if (const auto now = FS::identity(path); !now || *now != placed) {
+        (void)FS::deleteLink(temporary);
+        return std::unexpected(QString("%1 was replaced meanwhile, so it was left as it is").arg(path));
+    }
+    if (auto replaced = FS::replaceFile(temporary, path); !replaced) {
+        (void)FS::deleteLink(temporary);
+        return replaced;
+    }
+    return FS::flushDir(QFileInfo(path).absolutePath());
+}
+}  // namespace
+
+MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<bool(int done, int total)>& progress)
+{
+    MoveReport report;
+    const auto refs = from.refsSnapshot();
+    for (int done = 0; done < refs.size(); done++) {
+        if (progress && !progress(done, static_cast<int>(refs.size()))) {
+            report.stopped = true;
+            break;
+        }
+        const auto& key = refs[done].first;
+        // other launchers using the old store keep their links there
+        if (!key.owner.startsWith(from.clientId() + ':')) {
+            report.otherLaunchers++;
+            continue;
+        }
+        const auto root = from.ownerRoot(key.owner);
+        if (root.isEmpty()) {
+            continue;
+        }
+        const ContentStore::Destination destination{ key.owner, root, key.relativePath };
+        const auto path = destination.path();
+        const QFileInfo info(path);
+        if (!info.exists() && !info.isSymbolicLink()) {
+            // nothing to move: the old store releases it like any link that is gone
+            if (from.forgetRemoved(key)) {
+                report.gone++;
+            }
+            continue;
+        }
+        // the bytes the instance sees, a damaged copy as it is: from the file a symbolic link points at, as copying checks
+        // the size of the file it reads, and a link's own size is that of its target's path
+        const bool symbolic = info.isSymLink();
+        const auto source = symbolic ? info.symLinkTarget() : path;
+        // the old store's file isn't kept anyway, so where no link works a copy of it is better than nothing
+        ContentStore::PlaceOptions options;
+        options.allowCopy = true;
+        QString error;
+        bool placedCurrent = false;
+        // what the last placement put at the path, which is only ever replaced by putting the link back
+        std::optional<FS::FileIdentity> placedIdentity;
+        // A file put at the path meanwhile, such as by an update, differs from the identity taken before the copy, and
+        // isn't replaced. A symbolic link stays the same while its target changes, so that is hashed again once replaced:
+        // what changed is still there, and is copied again. If it keeps changing, the old store's file isn't released.
+        constexpr int attempts = 3;
+        for (int attempt = 0; attempt < attempts && !placedCurrent; attempt++) {
+            const auto identity = FS::identity(path);
+            if (!identity) {
+                error = identity.error();
+                break;
+            }
+            moveStep(MoveStep::BeforeCopy, path);
+            const auto stored = to.ingest(source, ContentStore::IngestMode::Copy);
+            if (!stored) {
+                error = stored.error();
+                break;
+            }
+            moveStep(MoveStep::Copied, path);
+            // after the first attempt, the path holds the new store's own link, which needs no confirmation
+            const auto replaces = attempt == 0 ? std::optional(*identity) : std::nullopt;
+            if (auto placed = to.placeAt({ destination, stored->hash, replaces }, options); !placed) {
+                error = placed.error();
+                break;
+            }
+            if (auto placedNow = FS::identity(path)) {
+                placedIdentity = *placedNow;
+            } else {
+                placedIdentity.reset();
+            }
+            moveStep(MoveStep::Placed, path);
+            if (!symbolic) {
+                placedCurrent = true;
+                break;
+            }
+            const auto now = ObjectFiles::sha256(source);
+            if (!now) {
+                error = now.error();
+                break;
+            }
+            placedCurrent = *now == stored->hash;
+            if (!placedCurrent) {
+                error = QString("%1 kept changing while it was moved").arg(source);
+            }
+        }
+        if (!placedCurrent) {
+            // The path then holds a copy older than what the link's target holds: the link is put back, so the instance
+            // sees the newest bytes, and the new store forgets the path. The old store keeps it, so its folder is kept.
+            if (symbolic && placedIdentity) {
+                if (auto restored = restoreLink(path, source, *placedIdentity); !restored) {
+                    error += QString("; the newest version is kept in %1, as %2").arg(source, restored.error());
+                }
+                // unless the path still holds its link, as putting the link back failed
+                if (auto forgotten = to.releaseMoved(key); !forgotten) {
+                    error += "; " + forgotten.error();
+                }
+            }
+            report.failed.append(QString("%1: %2").arg(path, error));
+            continue;
+        }
+        if (auto released = from.releaseMoved(key); !released) {
+            report.failed.append(QString("%1: %2").arg(path, released.error()));
+            continue;
+        }
+        report.moved++;
+    }
+    if (progress && !report.stopped) {
+        progress(static_cast<int>(refs.size()), static_cast<int>(refs.size()));
+    }
+    return report;
+}
+
+namespace {
+// The folder with links resolved, as far as it exists: the rest of the path is appended as it is
+QString resolvedFolder(const QString& dir)
+{
+    const auto absolute = QDir::cleanPath(QFileInfo(dir).absoluteFilePath());
+    auto existing = absolute;
+    QString rest;
+    while (!QFileInfo::exists(existing)) {
+        const auto parent = QFileInfo(existing).path();
+        if (parent == existing) {
+            return absolute;
+        }
+        rest = QFileInfo(existing).fileName() + (rest.isEmpty() ? QString() : '/' + rest);
+        existing = parent;
+    }
+    const auto canonical = QFileInfo(existing).canonicalFilePath();
+    return QDir::cleanPath(rest.isEmpty() ? canonical : canonical + '/' + rest);
+}
+}  // namespace
+
+bool foldersOverlap(const QString& first, const QString& second)
+{
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    // the file systems there usually ignore case
+    constexpr auto sensitivity = Qt::CaseInsensitive;
+#else
+    constexpr auto sensitivity = Qt::CaseSensitive;
+#endif
+    const auto a = resolvedFolder(first);
+    const auto b = resolvedFolder(second);
+    const auto within = [&](const QString& inner, const QString& outer) {
+        return inner.compare(outer, sensitivity) == 0 || inner.startsWith(outer.endsWith('/') ? outer : outer + '/', sensitivity);
+    };
+    return within(a, b) || within(b, a);
+}
+
+QStringList linksInto(const QString& dir, const QStringList& gameRoots)
+{
+    const auto prefix = QDir::cleanPath(QFileInfo(dir).absoluteFilePath()) + '/';
+    QStringList links;
+    for (const auto& gameRoot : gameRoots) {
+        for (const auto& folder : contentFolders()) {
+            const QDir content(QDir(gameRoot).filePath(folder));
+            for (const auto& info : content.entryInfoList(QDir::Files | QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
+                if (info.isSymLink() && QDir::cleanPath(info.symLinkTarget()).startsWith(prefix, Qt::CaseInsensitive)) {
+                    links.append(info.absoluteFilePath());
+                }
+            }
+        }
+    }
+    return links;
 }
 
 int shareFreshFiles(ContentStore& store,

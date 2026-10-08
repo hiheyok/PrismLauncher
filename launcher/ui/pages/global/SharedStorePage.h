@@ -30,6 +30,9 @@ class SharedStorePage : public QWidget, public BasePage {
    private:
     void loadSettings();
     void refreshStatus();
+    // Moves the shared files to the store folder a setting names, and uses that store from now on. False if the folder
+    // can't be changed now, which keeps the setting as it was.
+    bool moveStore(const QString& setting);
     // Runs a store task with a progress dialog, then shows what it found
     void runTask(Task* task, const std::function<QString()>& summary);
 
@@ -44,5 +47,6 @@ class SharedStorePage : public QWidget, public BasePage {
     QPushButton* m_reconcile = nullptr;
     QPushButton* m_deepVerify = nullptr;
     QPushButton* m_repair = nullptr;
+    QPushButton* m_cleanUp = nullptr;
     QPushButton* m_useAnyway = nullptr;
 };

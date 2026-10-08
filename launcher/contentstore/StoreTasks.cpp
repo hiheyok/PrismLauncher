@@ -46,3 +46,22 @@ void ReconcileStoreTask::executeTask()
     });
     m_watcher.setFuture(QtConcurrent::run([store = m_store, options = m_options] { return store->reconcile(options); }));
 }
+
+void MoveStoreTask::executeTask()
+{
+    setStatus(tr("Moving the shared files"));
+    connect(&m_watcher, &QFutureWatcher<SharedContent::MoveReport>::finished, this, [this] {
+        m_report = m_watcher.result();
+        if (m_report->stopped) {
+            emitAborted();
+            return;
+        }
+        emitSucceeded();
+    });
+    m_watcher.setFuture(QtConcurrent::run([this] {
+        return SharedContent::moveShares(*m_from, *m_to, [this](int done, int total) {
+            QMetaObject::invokeMethod(this, [this, done, total] { setProgress(done, total); }, Qt::QueuedConnection);
+            return !m_aborted;
+        });
+    }));
+}

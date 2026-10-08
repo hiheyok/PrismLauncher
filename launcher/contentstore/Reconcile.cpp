@@ -829,6 +829,7 @@ ContentStore::Stats ContentStore::stats() const
     for (const auto& ref : m_table.refs()) {
         links[ref.hash]++;
     }
+    const auto used = usedHashes();
     for (const auto& entry : m_table.entries()) {
         stats.files++;
         stats.bytes += entry.size;
@@ -836,6 +837,15 @@ ContentStore::Stats ContentStore::stats() const
         stats.links += count;
         if (count > 1) {
             stats.savedBytes += entry.size * (count - 1);
+        }
+        if (entry.current && !used.contains(entry.hash)) {
+            stats.unusedFiles++;
+            stats.unusedBytes += entry.size;
+            if (entry.unrecorded) {
+                stats.unusedFound++;
+            } else if (entry.hadSymbolicLinks) {
+                stats.unusedAwaitingScan++;
+            }
         }
     }
     return stats;
