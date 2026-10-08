@@ -355,9 +355,9 @@ void setMoveHookForTesting(std::function<void(MoveStep step, const QString& path
 }
 
 namespace {
-// Puts the symbolic link to target back at path, in place of what a move put there; or, where no symbolic link can be
-// created, a copy of what target holds now
-Result<> restoreLink(const QString& path, const QString& target)
+// Puts the symbolic link to target back at path, in place of the file a move put there, which must still be there; or,
+// where no symbolic link can be created, a copy of what target holds now
+Result<> restoreLink(const QString& path, const QString& target, const FS::FileIdentity& placed)
 {
     TRY_INTO(const auto temporary, FS::reserveTemporarySibling(path, "prism-link"))
     TRY(FS::deleteLink(temporary))
@@ -365,6 +365,11 @@ Result<> restoreLink(const QString& path, const QString& target)
         if (!QFile::copy(target, temporary)) {
             return std::unexpected(QString("Could not link or copy %1 back to %2").arg(target, path));
         }
+    }
+    // checked last, right before it is replaced: a file put there since, such as by an update, is left as it is
+    if (const auto now = FS::identity(path); !now || *now != placed) {
+        (void)FS::deleteLink(temporary);
+        return std::unexpected(QString("%1 was replaced meanwhile, so it was left as it is").arg(path));
     }
     if (auto replaced = FS::replaceFile(temporary, path); !replaced) {
         (void)FS::deleteLink(temporary);
@@ -412,7 +417,8 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
         options.allowCopy = true;
         QString error;
         bool placedCurrent = false;
-        bool placedOnce = false;
+        // what the last placement put at the path, which is only ever replaced by putting the link back
+        std::optional<FS::FileIdentity> placedIdentity;
         // A file put at the path meanwhile, such as by an update, differs from the identity taken before the copy, and
         // isn't replaced. A symbolic link stays the same while its target changes, so that is hashed again once replaced:
         // what changed is still there, and is copied again. If it keeps changing, the old store's file isn't released.
@@ -436,7 +442,11 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
                 error = placed.error();
                 break;
             }
-            placedOnce = true;
+            if (auto placedNow = FS::identity(path)) {
+                placedIdentity = *placedNow;
+            } else {
+                placedIdentity.reset();
+            }
             moveStep(MoveStep::Placed, path);
             if (!symbolic) {
                 placedCurrent = true;
@@ -455,10 +465,12 @@ MoveReport moveShares(ContentStore& from, ContentStore& to, const std::function<
         if (!placedCurrent) {
             // The path then holds a copy older than what the link's target holds: the link is put back, so the instance
             // sees the newest bytes, and the new store forgets the path. The old store keeps it, so its folder is kept.
-            if (symbolic && placedOnce) {
-                if (auto restored = restoreLink(path, source); !restored) {
+            if (symbolic && placedIdentity) {
+                if (auto restored = restoreLink(path, source, *placedIdentity); !restored) {
                     error += QString("; the newest version is kept in %1, as %2").arg(source, restored.error());
-                } else if (auto forgotten = to.releaseMoved(key); !forgotten) {
+                }
+                // unless the path still holds its link, as putting the link back failed
+                if (auto forgotten = to.releaseMoved(key); !forgotten) {
                     error += "; " + forgotten.error();
                 }
             }
