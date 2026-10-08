@@ -471,7 +471,11 @@ void ExternalResourcesPage::updateSharingActions()
     m_ui->actionStopSharing->setVisible(linked);
     m_ui->actionRestoreOriginal->setVisible(linked);
     m_ui->actionRevertToShared->setVisible(SharedContent::storeFor(m_instance) != nullptr);
-    m_ui->actionShare->setVisible(SharedContent::storeFor(m_instance) != nullptr);
+    // shown while the instance doesn't share its files too, saying why it can't share them
+    m_ui->actionShare->setVisible(linked);
+    m_ui->actionShare->setToolTip(SharedContent::instanceShares(m_instance)
+                                      ? tr("Share the selected local files with other instances, so each is stored only once")
+                                      : tr("Sharing is switched off for this instance: turn on \"Share Files of This Instance\" first"));
 }
 
 void ExternalResourcesPage::runSharingAction(const shared_qobject_ptr<SharingActionTask>& task, const QString& errorTitle)

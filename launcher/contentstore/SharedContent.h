@@ -116,6 +116,8 @@ int shareFreshFiles(ContentStore& store,
 struct ShareReport {
     int shared = 0;
     int alreadyShared = 0;
+    // left as they are, as the user keeps them local
+    int keptLocal = 0;
     // the size of the files that became links to a file another instance, or another of these files, already stored
     qint64 bytesSaved = 0;
     struct Skipped {
@@ -188,6 +190,9 @@ QStringList linksInto(const QString& dir, const QStringList& gameRoots);
 // Whether one folder is the other or within it, links resolved: a store can't move into or out of itself, as removing the
 // old folder would remove the new one with it
 bool foldersOverlap(const QString& first, const QString& second);
+// A folder for the store next to the instances' folder, links resolved, on the same drive as the instances; empty when
+// there is none, such as when the instances' folder is the top of its drive
+QString storeFolderBeside(const QString& instancesDir);
 // The steps of moving each file, where a test may change it
 enum class MoveStep { BeforeCopy, Copied, Placed };
 void setMoveHookForTesting(std::function<void(MoveStep step, const QString& path)> hook);

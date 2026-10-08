@@ -18,6 +18,7 @@
 #include "Application.h"
 #include "BaseInstance.h"
 #include "FileSystem.h"
+#include "FileSystemPrimitives.h"
 #include "InstanceList.h"
 #include "contentstore/ContentStore.h"
 #include "contentstore/SharedContent.h"
@@ -69,6 +70,18 @@ SharedStorePage::SharedStorePage(QWidget* parent) : QWidget(parent)
     m_volumeWarning = new QLabel(statusBox);
     m_volumeWarning->setWordWrap(true);
     statusLayout->addWidget(m_volumeWarning);
+    m_driveWarning = new QLabel(statusBox);
+    m_driveWarning->setWordWrap(true);
+    statusLayout->addWidget(m_driveWarning);
+    m_useInstanceDrive = new QPushButton(tr("Use a folder on the instances' drive"), statusBox);
+    statusLayout->addWidget(m_useInstanceDrive, 0, Qt::AlignLeft);
+    connect(m_useInstanceDrive, &QPushButton::clicked, this, [this] {
+        // next to the instances' folder, so it is on their drive; applied, and the files moved, with the other settings
+        const auto folder = SharedContent::storeFolderBeside(APPLICATION->settings()->get("InstanceDir").toString());
+        if (!folder.isEmpty()) {
+            m_storeDir->setText(folder);
+        }
+    });
     m_useAnyway = new QPushButton(tr("Use the store anyway…"), statusBox);
     statusLayout->addWidget(m_useAnyway, 0, Qt::AlignLeft);
     layout->addWidget(statusBox);
@@ -281,6 +294,18 @@ void SharedStorePage::refreshStatus()
     }
     m_useAnyway->setVisible(store && store->state() == ContentStore::State::Busy && store->lockHolder() &&
                             !store->lockHolder()->hostname.isEmpty());
+
+    // hard links only work within a drive, so a store on another drive than the instances links them symbolically
+    const auto instances = QDir(APPLICATION->settings()->get("InstanceDir").toString()).absolutePath();
+    const bool otherDrive = store && !FS::sameVolume(store->storeDir(), instances);
+    m_driveWarning->setText(otherDrive ? tr("The shared files folder is on another drive than the instances (%1). Files can then only "
+                                            "be shared through symbolic links, which need Developer Mode or administrator rights on "
+                                            "Windows, and are copied where those don't work.")
+                                             .arg(instances)
+                                       : QString());
+    m_driveWarning->setVisible(otherDrive);
+    // only where a folder next to the instances is on their drive; otherwise the user chooses one there
+    m_useInstanceDrive->setVisible(otherDrive && !SharedContent::storeFolderBeside(instances).isEmpty());
 
     if (!store) {
         m_status->setText(tr("Sharing is off."));

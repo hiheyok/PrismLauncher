@@ -261,6 +261,21 @@ class MoveStoreTest : public QObject {
         }
     }
 
+    // the folder offered for the store, on the instances' drive
+    void test_storeFolderBeside()
+    {
+        QVERIFY(QDir().mkpath(path("games/instances")));
+        QCOMPARE(SharedContent::storeFolderBeside(path("games/instances")), QFileInfo(path("games")).canonicalFilePath() + "/shared-files");
+        // beside the folder a link leads to, not beside the link
+        QVERIFY(QDir().mkpath(path("elsewhere")));
+        if (FS::createSymbolicLink(QFileInfo(path("games/instances")).absoluteFilePath(), path("elsewhere/instances"))) {
+            QCOMPARE(SharedContent::storeFolderBeside(path("elsewhere/instances")),
+                     QFileInfo(path("games")).canonicalFilePath() + "/shared-files");
+        }
+        // nothing above the top of a drive
+        QVERIFY(SharedContent::storeFolderBeside(QDir::rootPath()).isEmpty());
+    }
+
     void test_goneLinksAreReleased()
     {
         QVERIFY(writeFile(path("a/mods/mod.jar"), "a mod"));

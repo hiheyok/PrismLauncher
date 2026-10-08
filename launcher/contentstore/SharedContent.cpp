@@ -312,6 +312,7 @@ ShareReport shareInstance(ContentStore& store,
         const auto& path = files[done];
         const auto target = destination(store, instanceId, gameRoot, path);
         if (excluded && excluded(target.relativePath)) {
+            report.keptLocal++;
             continue;
         }
         const auto size = QFileInfo(path).size();
@@ -592,6 +593,20 @@ bool foldersOverlap(const QString& first, const QString& second)
         return inner.compare(outer, sensitivity) == 0 || inner.startsWith(outer.endsWith('/') ? outer : outer + '/', sensitivity);
     };
     return within(a, b) || within(b, a);
+}
+
+QString storeFolderBeside(const QString& instancesDir)
+{
+    auto instances = QFileInfo(instancesDir).canonicalFilePath();
+    if (instances.isEmpty()) {
+        instances = QDir::cleanPath(QFileInfo(instancesDir).absoluteFilePath());
+    }
+    // the folder above may be on another drive, when the instances' folder is where a drive is mounted
+    const auto parent = QFileInfo(instances).path();
+    if (parent == instances || !FS::sameVolume(parent, instances)) {
+        return {};
+    }
+    return QDir(parent).filePath("shared-files");
 }
 
 QStringList linksInto(const QString& dir, const QStringList& gameRoots)
